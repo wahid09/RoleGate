@@ -7,6 +7,7 @@ os.environ.setdefault("SECRET_KEY", "test-secret-key-only-for-automated-tests-01
 os.environ.setdefault("FIRST_ADMIN_EMAIL", "admin@example.com")
 os.environ.setdefault("FIRST_ADMIN_PASSWORD", "Admin@12345")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
 
 import pytest
 from fastapi.testclient import TestClient

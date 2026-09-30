@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,8 +27,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     env:
       DATABASE_URL: postgresql+psycopg2://test:test@localhost:5432/test
+      REDIS_URL: redis://localhost:6379/0
       SECRET_KEY: ci-secret-key-only-for-this-workflow-0123456789
       FIRST_ADMIN_EMAIL: admin@example.com
       FIRST_ADMIN_PASSWORD: Admin@12345
@@ -73,7 +84,10 @@ jobs:
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
-      - name: Validate the compose file
-        run: cp .env.example .env && docker compose config -q
+      - name: Validate compose files
+        run: |
+          cp .env.example .env
+          docker compose config -q
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q
       - name: Build images
         run: docker compose build backend frontend

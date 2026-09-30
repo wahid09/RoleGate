@@ -102,6 +102,11 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: mailpit:1025
+      GF_SMTP_FROM_ADDRESS: alerts@example.com
+      GF_SMTP_FROM_NAME: RoleGate Alerts
+      ALERT_EMAIL: ${ALERT_EMAIL:-admin@example.com}
     volumes:
       - grafanadata:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -110,6 +115,7 @@ services:
     depends_on:
       - prometheus
       - loki
+      - mailpit
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest

@@ -1,0 +1,10 @@
+services:
+  backend:
+    image: ghcr.io/wahid09/rolegate-backend:${ROLEGATE_VERSION:-latest}
+    build: !reset null
+    volumes: !reset []      # drops the dev migrations bind mount
+    ports: !reset []        # drops 8000:8000, Nginx is the only entry point
+
+  frontend:
+    image: ghcr.io/wahid09/rolegate-frontend:${ROLEGATE_VERSION:-latest}
+    build: !reset null

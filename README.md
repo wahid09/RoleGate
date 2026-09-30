@@ -37,10 +37,12 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 - PostgreSQL with pgAdmin, Alembic migrations
 - Metrics: Prometheus, Grafana, postgres-exporter, cAdvisor
 - Centralized logs: Loki + Grafana Alloy, searchable in Grafana
+- Alerting: Grafana alert rules for failed-login spikes and login throttling, delivered by email
+- Releases: tagged versions publish Docker images to GitHub Container Registry
 - Mailpit to catch emails in development
 
 **Quality**
-- Backend tests (pytest) against a real PostgreSQL database, frontend tests (Vitest)
+- Backend tests (pytest) against real PostgreSQL and Redis, including rate-limit tests; frontend tests (Vitest)
 - GitHub Actions: lint, migration checks, tests, production build and Docker image build
 
 ---
@@ -115,6 +117,17 @@ Database migrations are applied automatically when the backend starts, and the d
 
 Promtail is not used because it reached end of life in March 2026; Alloy is its successor.
 
+## Alerting
+
+Grafana alert rules, a contact point and a notification policy are provisioned from `monitoring/grafana/provisioning/alerting/`, so they are version controlled and appear automatically after `docker compose up`.
+
+| Rule | Fires when | Severity |
+|---|---|---|
+| Failed login spike | more than 10 failed logins (HTTP 401) in 5 minutes | warning |
+| Login throttling triggered | more than 5 login requests rejected with HTTP 429 (rate limit or account lockout) in 5 minutes | critical |
+
+Alerts are emailed to `ALERT_EMAIL` through Grafana's SMTP settings (Mailpit in development, so they appear at http://localhost:8025). The rules read the backend's access logs from Loki. Change thresholds in `monitoring/grafana/provisioning/alerting/rules.yml` and restart Grafana; provisioned rules are read-only in the Grafana UI.
+
 ## Configuration
 
 All settings live in `.env` (see `.env.example`).
@@ -137,6 +150,7 @@ All settings live in `.env` (see `.env.example`).
 | `FIRST_ADMIN_EMAIL`, `FIRST_ADMIN_PASSWORD` | Seeded administrator account |
 | `PGADMIN_EMAIL`, `PGADMIN_PASSWORD` | pgAdmin login |
 | `GRAFANA_USER`, `GRAFANA_PASSWORD` | Grafana login |
+| `ALERT_EMAIL` | Recipient of Grafana alert emails (default `admin@example.com`) |
 
 ## Roles and permissions
 
@@ -190,22 +204,28 @@ Interactive docs are at `/api/docs`.
 
 ```
 RoleGate/
-├── .github/workflows/ci.yml
+├── .github/workflows/
+│   ├── ci.yml                   # lint, tests, build
+│   └── publish.yml              # release: push images to GHCR
 ├── docker-compose.yml
+├── docker-compose.prod.yml      # run published images instead of building
 ├── .env.example
 ├── nginx/default.conf
 ├── monitoring/
 │   ├── prometheus/prometheus.yml
 │   ├── loki/loki.yml
 │   ├── alloy/config.alloy
-│   └── grafana/provisioning/datasources/datasource.yml
+│   └── grafana/provisioning/
+│       ├── datasources/datasource.yml
+│       └── alerting/            # rules.yml, contact-points.yml, policies.yml
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt, requirements-dev.txt
 │   ├── alembic.ini
 │   ├── alembic/                 # migrations (env.py, versions/)
 │   ├── pytest.ini, ruff.toml
-│   ├── tests/                   # conftest.py, test_auth.py, test_rbac.py, test_audit.py
+│   ├── tests/                   # conftest.py, test_auth.py, test_rbac.py, test_audit.py,
+│   │                            # test_rate_limit.py
 │   └── app/
 │       ├── main.py              # app, lifespan, metrics
 │       ├── config.py            # settings from environment
@@ -283,7 +303,14 @@ pytest -q
 ruff check .
 ```
 
-Emails are captured in memory and rate limiting is switched off during tests.
+Emails are captured in memory and rate limiting is switched off during tests, except in `test_rate_limit.py`. Those tests need a Redis server and are skipped when none is reachable:
+
+```bash
+docker run -d --name redis-test -p 56379:6379 redis:7-alpine
+export REDIS_URL=redis://127.0.0.1:56379/0
+                                     # PowerShell: $env:REDIS_URL = "redis://127.0.0.1:56379/0"
+pytest -q
+```
 
 **Frontend** (Vitest)
 
@@ -300,11 +327,36 @@ npm run build
 
 | Job | Steps |
 |---|---|
-| `backend` | Ruff lint, `alembic upgrade head` on an empty database, `alembic check` (models and migrations in sync), pytest against a PostgreSQL service |
+| `backend` | Ruff lint, `alembic upgrade head` on an empty database, `alembic check` (models and migrations in sync), pytest against PostgreSQL and Redis services (including the rate-limit tests) |
 | `frontend` | `npm ci`, Vitest, production build |
 | `docker` | Validates `docker-compose.yml` and builds the backend and frontend images |
 
 If `alembic check` fails, you changed `models.py` without generating a migration.
+
+## Releases and container images
+
+Pushing a version tag runs the full CI pipeline and, if it passes, publishes both images to GitHub Container Registry:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+| Image | Tags |
+|---|---|
+| `ghcr.io/wahid09/rolegate-backend` | `1.0.0`, `1.0`, `latest`, `sha-<commit>` |
+| `ghcr.io/wahid09/rolegate-frontend` | same |
+
+The workflow can also be started manually from the Actions tab (it then publishes `main` and `sha-<commit>` tags).
+
+To run the published images instead of building locally:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+`docker-compose.prod.yml` swaps `build:` for `image:` and removes the development-only port mapping and migration bind mount (needs Docker Compose 2.24.4 or newer). Set `ROLEGATE_VERSION=1.0.0` to pin a version. New packages are private by default: make them public in the package settings, or run `docker login ghcr.io` with a token that has `read:packages` on the server.
 
 ## Security notes
 
@@ -318,19 +370,17 @@ If `alembic check` fails, you changed `models.py` without generating a migration
 
 - [ ] Replace every password and `SECRET_KEY` in `.env`
 - [ ] Serve over HTTPS and set `COOKIE_SECURE=true`
-- [ ] Remove the `8000:8000` port mapping from the `backend` service
+- [ ] Deploy the published images with `docker-compose.prod.yml` (drops the `8000:8000` mapping and the migration bind mount)
 - [ ] Do not expose pgAdmin, Prometheus, Grafana or Mailpit publicly (or protect them)
-- [ ] Remove the `alembic/versions` bind mount from the `backend` service
-- [ ] Configure a real SMTP provider and remove `mailpit`
+- [ ] Configure a real SMTP provider for the app (`SMTP_*`) and for Grafana alerts (`GF_SMTP_*`), then remove `mailpit`
 - [ ] Review the Alloy Docker socket mount and Loki retention (`retention_period`)
 - [ ] Set up database backups
 
 ## Roadmap
 
 - [ ] Two-factor authentication
-- [ ] Rate-limit tests (Redis service in CI)
-- [ ] Image publishing to GitHub Container Registry (CD)
-- [ ] Grafana alert rules (failed-login spikes, error rates)
+- [ ] Automated database backups
+- [ ] Alert rules for server errors and latency
 
 ## License
 
