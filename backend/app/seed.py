@@ -14,6 +14,7 @@ PERMISSIONS = [
     ("roles:update", "Edit roles"),
     ("roles:delete", "Delete roles"),
     ("users:create", "Create users"),
+    ("audit:read", "View audit log"),
 ]
 
 DEFAULT_ROLES = {

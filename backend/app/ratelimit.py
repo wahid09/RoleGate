@@ -31,6 +31,8 @@ def rate_limit(name: str, limit: int, window: int):
     """FastAPI dependency: at most `limit` calls per `window` seconds per client IP."""
 
     def dependency(request: Request) -> None:
+        if not settings.RATE_LIMIT_ENABLED:
+            return
         try:
             count, ttl = _hit(f"rl:{name}:{client_ip(request)}", window)
         except redis.RedisError:
@@ -49,6 +51,8 @@ def rate_limit(name: str, limit: int, window: int):
 # --- per-account lockout after repeated failed logins -----------------------
 
 def login_locked(email: str) -> bool:
+    if not settings.RATE_LIMIT_ENABLED:
+        return False
     try:
         value = _r.get(f"lf:{email}")
         return value is not None and int(value) >= settings.LOGIN_MAX_FAILURES
@@ -57,6 +61,8 @@ def login_locked(email: str) -> bool:
 
 
 def login_failed(email: str) -> None:
+    if not settings.RATE_LIMIT_ENABLED:
+        return
     try:
         _hit(f"lf:{email}", settings.LOGIN_LOCK_SECONDS)
     except redis.RedisError:

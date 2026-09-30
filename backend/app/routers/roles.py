@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import audit, models, schemas
 from ..database import get_db
 from ..deps import require_permission
 
@@ -12,6 +12,10 @@ PROTECTED = {"admin", "user"}
 
 def _perms(db: Session, ids: list[int]):
     return list(db.scalars(select(models.Permission).where(models.Permission.id.in_(ids))).all())
+
+
+def _snapshot(role: models.Role) -> dict:
+    return {"name": role.name, "permissions": sorted(p.code for p in role.permissions)}
 
 
 @router.get("", response_model=list[schemas.RoleOut])
@@ -27,13 +31,16 @@ def list_permissions(db: Session = Depends(get_db), _=Depends(require_permission
 @router.post("", response_model=schemas.RoleOut, status_code=201)
 def create_role(
     data: schemas.RoleIn,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_permission("roles:create")),
+    actor: models.User = Depends(require_permission("roles:create")),
 ):
     if db.scalar(select(models.Role).where(models.Role.name == data.name)):
         raise HTTPException(400, "Role already exists")
     role = models.Role(name=data.name, description=data.description, permissions=_perms(db, data.permission_ids))
     db.add(role)
+    db.flush()
+    audit.record(db, request, "role.create", actor=actor, target_type="role", target_id=role.id, detail=_snapshot(role))
     db.commit()
     db.refresh(role)
     return role
@@ -43,16 +50,22 @@ def create_role(
 def update_role(
     role_id: int,
     data: schemas.RoleIn,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_permission("roles:update")),
+    actor: models.User = Depends(require_permission("roles:update")),
 ):
     role = db.get(models.Role, role_id)
     if not role:
         raise HTTPException(404, "Role not found")
     if role.name == "admin":
         raise HTTPException(400, "The admin role cannot be modified")
+    before = _snapshot(role)
     role.name, role.description = data.name, data.description
     role.permissions = _perms(db, data.permission_ids)
+    audit.record(
+        db, request, "role.update", actor=actor, target_type="role", target_id=role.id,
+        detail={"before": before, "after": _snapshot(role)},
+    )
     db.commit()
     db.refresh(role)
     return role
@@ -61,13 +74,15 @@ def update_role(
 @router.delete("/{role_id}", status_code=204)
 def delete_role(
     role_id: int,
+    request: Request,
     db: Session = Depends(get_db),
-    _=Depends(require_permission("roles:delete")),
+    actor: models.User = Depends(require_permission("roles:delete")),
 ):
     role = db.get(models.Role, role_id)
     if not role:
         raise HTTPException(404, "Role not found")
     if role.name in PROTECTED:
         raise HTTPException(400, "This role is protected")
+    audit.record(db, request, "role.delete", actor=actor, target_type="role", target_id=role.id, detail=_snapshot(role))
     db.delete(role)
     db.commit()

@@ -25,5 +25,7 @@ class Settings(BaseSettings):
     LOGIN_LOCK_SECONDS: int = 900
     VERIFY_TOKEN_EXPIRE_HOURS: int = 24
 
+    RATE_LIMIT_ENABLED: bool = True
+
 
 settings = Settings()

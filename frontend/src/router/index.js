@@ -10,6 +10,7 @@ import Profile from '../views/Profile.vue'
 import ForgotPassword from '../views/ForgotPassword.vue'
 import ResetPassword from '../views/ResetPassword.vue'
 import VerifyEmail from '../views/VerifyEmail.vue'
+import AuditLog from '../views/AuditLog.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -19,6 +20,7 @@ const router = createRouter({
     { path: '/forgot-password', component: ForgotPassword, meta: { guest: true } },
     { path: '/reset-password', component: ResetPassword, meta: { guest: true } },
     { path: '/verify-email', component: VerifyEmail },
+    { path: 'audit', component: AuditLog, meta: { permission: 'audit:read' } },
     {
       path: '/',
       component: AdminLayout,

@@ -6,6 +6,7 @@ const items = [
   { to: '/', icon: 'speedometer2', label: 'Dashboard', perm: 'dashboard:view' },
   { to: '/users', icon: 'people', label: 'Users', perm: 'users:read' },
   { to: '/roles', icon: 'shield-lock', label: 'Roles & Permissions', perm: 'roles:read' },
+  { to: '/audit', icon: 'clipboard-data', label: 'Audit Log', perm: 'audit:read' },
   { to: '/profile', icon: 'person-circle', label: 'My Profile' },
 ]
 </script>

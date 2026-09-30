@@ -4,9 +4,8 @@ from fastapi import APIRouter, FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from .database import SessionLocal
-from .routers import auth, roles, users
+from .routers import audit_logs, auth, roles, users
 from .seed import seed
-
 
 # @asynccontextmanager
 # async def lifespan(app: FastAPI):
@@ -34,6 +33,7 @@ api.include_router(auth.router)
 api.include_router(users.router)
 api.include_router(roles.router)
 app.include_router(api)
+api.include_router(audit_logs.router)
 
 
 @app.get("/api/health", tags=["system"])

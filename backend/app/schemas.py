@@ -80,3 +80,22 @@ class VerifyIn(BaseModel):
 class ChangePasswordIn(BaseModel):
     current_password: str = Field(min_length=1, max_length=72)
     new_password: str = Field(min_length=8, max_length=72)
+
+class AuditLogOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    actor_id: int | None
+    actor_email: str | None
+    action: str
+    target_type: str | None
+    target_id: str | None
+    detail: dict | None
+    ip: str | None
+    created_at: datetime
+
+
+class AuditPage(BaseModel):
+    items: list[AuditLogOut]
+    total: int
+    page: int
+    page_size: int

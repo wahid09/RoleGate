@@ -1,0 +1,4 @@
+extend-exclude = ["alembic/versions"]
+
+[lint.per-file-ignores]
+"tests/conftest.py" = ["E402"]

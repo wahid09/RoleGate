@@ -77,6 +77,25 @@ services:
     ports:
       - "9090:9090"
 
+  loki:
+    image: grafana/loki:latest
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ./monitoring/loki/loki.yml:/etc/loki/loki.yml:ro
+      - lokidata:/loki
+
+  alloy:
+    image: grafana/alloy:latest
+    restart: unless-stopped
+    command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloydata:/var/lib/alloy/data
+    depends_on:
+      - loki
+
   grafana:
     image: grafana/grafana:latest
     restart: unless-stopped
@@ -90,6 +109,7 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+      - loki
 
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest
@@ -113,3 +133,5 @@ volumes:
   pgdata:
   promdata:
   grafanadata:
+  lokidata:
+  alloydata:

@@ -1,11 +1,19 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Cookie,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+)
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import audit, models, schemas
 from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
@@ -88,7 +96,12 @@ def _send_verification(db: Session, user: models.User, background: BackgroundTas
     status_code=201,
     dependencies=[Depends(rate_limit("register", 10, 3600))],
 )
-def register(data: schemas.RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
+def register(
+    data: schemas.RegisterIn,
+    request: Request,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
     email = data.email.lower()
     if db.scalar(select(models.User).where(models.User.email == email)):
         raise HTTPException(400, "Email already registered")
@@ -103,7 +116,8 @@ def register(data: schemas.RegisterIn, background: BackgroundTasks, db: Session 
     db.add(user)
     db.commit()
     db.refresh(user)
-    _send_verification(db, user, background)
+    audit.record(db, request, "auth.register", actor=user, target_type="user", target_id=user.id)
+    _send_verification(db, user, background)   # commits the audit row too
     db.refresh(user)
     return user
 
@@ -140,6 +154,7 @@ def resend_verification(
     dependencies=[Depends(rate_limit("login", 10, 60))],
 )
 def login(
+    request: Request,
     response: Response,
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
@@ -151,6 +166,9 @@ def login(
     user = db.scalar(select(models.User).where(models.User.email == email))
     if not user or not verify_password(form.password, user.hashed_password):
         login_failed(email)
+        audit.record(db, request, "auth.login_failed", actor=user, actor_email=email,
+                     detail={"reason": "bad_credentials"})
+        db.commit()
         raise HTTPException(401, "Incorrect email or password")
     if not user.is_active:
         raise HTTPException(403, "Account is disabled")
@@ -158,7 +176,8 @@ def login(
         raise HTTPException(403, NOT_VERIFIED)
 
     login_ok(email)
-    _issue_refresh(db, user, response)
+    audit.record(db, request, "auth.login", actor=user)
+    _issue_refresh(db, user, response)         # commits the audit row too
     return _access(user)
 
 
@@ -214,18 +233,20 @@ def me(user: models.User = Depends(get_current_user)):
 @router.post("/change-password", dependencies=[Depends(rate_limit("change-pw", 5, 900))])
 def change_password(
     data: schemas.ChangePasswordIn,
+    request: Request,
     response: Response,
     user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not verify_password(data.current_password, user.hashed_password):
-        raise HTTPException(400, "Current password is incorrect")   # 400, not 401, on purpose
+        raise HTTPException(400, "Current password is incorrect")
     if data.current_password == data.new_password:
         raise HTTPException(400, "New password must be different from the current one")
     user.hashed_password = hash_password(data.new_password)
+    audit.record(db, request, "auth.password.change", actor=user, target_type="user", target_id=user.id)
     db.commit()
-    _revoke_all(db, user.id)              # sign out all other devices...
-    _issue_refresh(db, user, response)    # ...but keep this one signed in
+    _revoke_all(db, user.id)
+    _issue_refresh(db, user, response)
     return {"message": "Password changed. Other devices have been signed out."}
 
 
@@ -257,7 +278,7 @@ def forgot_password(
 
 
 @router.post("/reset-password", dependencies=[Depends(rate_limit("reset", 10, 900))])
-def reset_password(data: schemas.ResetIn, db: Session = Depends(get_db)):
+def reset_password(data: schemas.ResetIn, request: Request, db: Session = Depends(get_db)):
     row = db.scalar(
         select(models.PasswordResetToken).where(
             models.PasswordResetToken.token_hash == hash_token(data.token)
@@ -268,6 +289,7 @@ def reset_password(data: schemas.ResetIn, db: Session = Depends(get_db)):
     user = db.get(models.User, row.user_id)
     user.hashed_password = hash_password(data.new_password)
     row.used = True
+    audit.record(db, request, "auth.password.reset", actor=user, target_type="user", target_id=user.id)
     db.commit()
     _revoke_all(db, user.id)
     return {"message": "Password updated. You can now sign in."}
