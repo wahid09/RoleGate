@@ -1,8 +1,10 @@
 # RoleGate
 
+![CI](https://github.com/wahid09/RoleGate/actions/workflows/ci.yml/badge.svg)
+
 **Authentication & role-based access control (RBAC) admin platform.**
 
-RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and fine-grained permissions. Users register, verify their email and land on a professional admin dashboard (sidebar, header, footer, content area) where menus and actions adapt to their permissions. It is built with **FastAPI**, **Vue 3** and **Bootstrap 5**, and ships as a single `docker compose` stack with Nginx, PostgreSQL, Redis and a Prometheus + Grafana monitoring setup.
+RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and fine-grained permissions. Users register, verify their email and land on a professional admin dashboard (sidebar, header, footer, content area) where menus and actions adapt to their permissions. It is built with **FastAPI**, **Vue 3** and **Bootstrap 5**, and ships as a single `docker compose` stack with Nginx, PostgreSQL, Redis, and a Prometheus + Grafana + Loki observability setup. Every sensitive action is recorded in an audit log, and the project comes with automated tests and a GitHub Actions pipeline.
 
 ---
 
@@ -21,15 +23,25 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 - Create custom roles and assign permissions from the UI
 - Permissions enforced in the API (`require_permission`) and reflected in the UI (menus, buttons, route guards)
 
+**Audit log**
+- Who did what, when and from which IP, stored in PostgreSQL
+- Records sign-ins (including failures), registrations, password changes, user creation, role assignments, enable/disable, and role create/update/delete, with before/after details
+- Searchable, paginated Audit Log page (requires the `audit:read` permission)
+
 **Admin dashboard**
 - Responsive Bootstrap 5 layout with collapsible sidebar, header user menu and footer
-- Dashboard, Users (list, create, assign roles, enable/disable), Roles & Permissions, Profile
+- Dashboard, Users (list, create, assign roles, enable/disable), Roles & Permissions, Audit Log, Profile
 
 **Infrastructure & operations**
 - Docker Compose for the whole stack, Nginx reverse proxy
 - PostgreSQL with pgAdmin, Alembic migrations
-- Prometheus, Grafana, postgres-exporter and cAdvisor for monitoring
+- Metrics: Prometheus, Grafana, postgres-exporter, cAdvisor
+- Centralized logs: Loki + Grafana Alloy, searchable in Grafana
 - Mailpit to catch emails in development
+
+**Quality**
+- Backend tests (pytest) against a real PostgreSQL database, frontend tests (Vitest)
+- GitHub Actions: lint, migration checks, tests, production build and Docker image build
 
 ---
 
@@ -41,7 +53,8 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 | Frontend | Vue 3, Vite, Pinia, Vue Router, Axios, Bootstrap 5, Bootstrap Icons |
 | Data | PostgreSQL 16, Redis 7 |
 | Proxy | Nginx |
-| Monitoring | Prometheus, Grafana, postgres-exporter, cAdvisor |
+| Observability | Prometheus, Grafana, Loki, Grafana Alloy, postgres-exporter, cAdvisor |
+| Testing & CI | pytest, Vitest, Ruff, GitHub Actions |
 | Dev tools | Docker Compose, pgAdmin, Mailpit |
 
 ## Architecture
@@ -55,10 +68,13 @@ flowchart LR
     Backend --> Redis[(Redis)]
     Backend --> Mailpit
     pgAdmin --> Postgres
+
     Prometheus --> Backend
     Prometheus --> PGExporter[postgres-exporter] --> Postgres
     Prometheus --> cAdvisor
+    Alloy["Grafana Alloy"] -. container logs .-> Loki
     Grafana --> Prometheus
+    Grafana --> Loki
 ```
 
 ## Quick start
@@ -66,8 +82,8 @@ flowchart LR
 **Requirements:** Docker and Docker Compose v2.
 
 ```bash
-git clone https://github.com/<your-username>/rolegate.git
-cd rolegate
+git clone https://github.com/wahid09/RoleGate.git
+cd RoleGate
 
 cp .env.example .env        # then edit .env and change every password / secret
 docker compose up -d --build
@@ -81,10 +97,23 @@ Database migrations are applied automatically when the backend starts, and the d
 | API docs (Swagger) | http://localhost/api/docs | |
 | Mailpit (caught emails) | http://localhost:8025 | Verification and reset links appear here |
 | pgAdmin | http://localhost:5050 | Server host `db`, port `5432` |
-| Grafana | http://localhost:3000 | Prometheus data source is pre-provisioned |
+| Grafana | http://localhost:3000 | Prometheus and Loki data sources are pre-provisioned |
 | Prometheus | http://localhost:9090 | |
 
-In Grafana, go to *Dashboards → Import* and use ID `9628` (PostgreSQL) and `14282` (cAdvisor containers). API request metrics (`http_requests_total`, latency histograms) are scraped from the backend's `/metrics` endpoint.
+## Monitoring and logs
+
+**Metrics.** In Grafana, go to *Dashboards → Import* and use ID `9628` (PostgreSQL) and `14282` (cAdvisor containers). API request metrics (`http_requests_total`, latency histograms) are scraped from the backend's `/metrics` endpoint, which is only reachable inside the Docker network.
+
+**Logs.** Grafana Alloy tails every container's output through the Docker socket and ships it to Loki (7-day retention, configurable in `monitoring/loki/loki.yml`). In Grafana open *Explore*, choose the **Loki** data source and try:
+
+```logql
+{service="backend"}                               # all API logs
+{service="backend"} |= "POST /api/auth/login"     # login traffic
+{service="nginx"} |= " 502 "                      # gateway errors
+{platform="docker"} |= "ERROR"                    # errors from any container
+```
+
+Promtail is not used because it reached end of life in March 2026; Alloy is its successor.
 
 ## Configuration
 
@@ -103,6 +132,7 @@ All settings live in `.env` (see `.env.example`).
 | `FRONTEND_URL` | Base URL used in email links |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM` | Outgoing email (Mailpit by default) |
 | `REDIS_URL` | Redis connection for rate limiting |
+| `RATE_LIMIT_ENABLED` | Set `false` to disable rate limiting and lockout (default `true`; the test suite turns it off) |
 | `LOGIN_MAX_FAILURES`, `LOGIN_LOCK_SECONDS` | Account lockout policy |
 | `FIRST_ADMIN_EMAIL`, `FIRST_ADMIN_PASSWORD` | Seeded administrator account |
 | `PGADMIN_EMAIL`, `PGADMIN_PASSWORD` | pgAdmin login |
@@ -118,6 +148,7 @@ All settings live in `.env` (see `.env.example`).
 | `users:update` | Change user roles, enable/disable users |
 | `roles:read` | List roles and permissions |
 | `roles:create` / `roles:update` / `roles:delete` | Manage roles |
+| `audit:read` | View the audit log |
 
 | Default role | Permissions |
 |---|---|
@@ -126,6 +157,22 @@ All settings live in `.env` (see `.env.example`).
 | `user` | `dashboard:view` (assigned on registration) |
 
 To add a permission, append it to `PERMISSIONS` in `backend/app/seed.py`, protect an endpoint with `Depends(require_permission("your:permission"))`, and (optionally) gate UI with `auth.can('your:permission')`.
+
+## Audit log
+
+Each entry stores the actor (id and email snapshot), action, target, JSON details, client IP and timestamp. The audit row is written in the same database transaction as the change it describes.
+
+| Action | Recorded when |
+|---|---|
+| `auth.register` | Someone signs up |
+| `auth.login` / `auth.login_failed` | Successful / failed sign-in |
+| `auth.password.change` / `auth.password.reset` | Password changed or reset |
+| `user.create` | An admin creates a user |
+| `user.roles.update` | A user's roles change (before and after are stored) |
+| `user.active.update` | A user is enabled or disabled |
+| `role.create` / `role.update` / `role.delete` | Role changes (with permission snapshots) |
+
+To audit a new action, call `audit.record(db, request, "thing.action", actor=user, target_type=..., target_id=..., detail={...})` before committing.
 
 ## API overview
 
@@ -136,49 +183,56 @@ Interactive docs are at `/api/docs`.
 | Auth | `POST /api/auth/register`, `verify-email`, `resend-verification`, `login`, `refresh`, `logout`, `forgot-password`, `reset-password`, `change-password`; `GET /api/auth/me` |
 | Users | `GET /api/users`, `POST /api/users`, `PUT /api/users/{id}/roles`, `PATCH /api/users/{id}/active` |
 | Roles | `GET /api/roles`, `GET /api/roles/permissions`, `POST /api/roles`, `PUT /api/roles/{id}`, `DELETE /api/roles/{id}` |
+| Audit | `GET /api/audit-logs` (query: `page`, `page_size`, `action` prefix, `actor` email substring) |
 | System | `GET /api/health` |
 
 ## Project structure
 
 ```
-rolegate/
+RoleGate/
+├── .github/workflows/ci.yml
 ├── docker-compose.yml
 ├── .env.example
 ├── nginx/default.conf
 ├── monitoring/
 │   ├── prometheus/prometheus.yml
+│   ├── loki/loki.yml
+│   ├── alloy/config.alloy
 │   └── grafana/provisioning/datasources/datasource.yml
 ├── backend/
 │   ├── Dockerfile
-│   ├── requirements.txt
+│   ├── requirements.txt, requirements-dev.txt
 │   ├── alembic.ini
 │   ├── alembic/                 # migrations (env.py, versions/)
+│   ├── pytest.ini, ruff.toml
+│   ├── tests/                   # conftest.py, test_auth.py, test_rbac.py, test_audit.py
 │   └── app/
 │       ├── main.py              # app, lifespan, metrics
 │       ├── config.py            # settings from environment
 │       ├── database.py
-│       ├── models.py            # User, Role, Permission, tokens
+│       ├── models.py            # User, Role, Permission, tokens, AuditLog
 │       ├── schemas.py
 │       ├── security.py          # password hashing, JWT, token hashing
 │       ├── deps.py              # current user, require_permission
 │       ├── ratelimit.py         # Redis rate limiting + lockout
+│       ├── audit.py             # audit.record() helper
 │       ├── emailer.py
 │       ├── seed.py              # default roles, permissions, admin
-│       └── routers/             # auth.py, users.py, roles.py
+│       └── routers/             # auth.py, users.py, roles.py, audit_logs.py
 └── frontend/
     ├── Dockerfile
     ├── nginx.conf
-    ├── package.json
+    ├── package.json, package-lock.json
     ├── vite.config.js
     └── src/
         ├── main.js, App.vue, style.css
-        ├── api/http.js          # Axios + silent token refresh
-        ├── stores/auth.js       # Pinia auth store
+        ├── api/http.js          # Axios + silent token refresh (+ http.test.js)
+        ├── stores/auth.js       # Pinia auth store (+ auth.test.js)
         ├── router/index.js      # route guards
         ├── layouts/AdminLayout.vue
         ├── components/          # Sidebar, Header, Footer, UserCreateModal
         └── views/               # Login, Register, ForgotPassword, ResetPassword,
-                                 # VerifyEmail, Dashboard, Users, Roles, Profile
+                                 # VerifyEmail, Dashboard, Users, Roles, AuditLog, Profile
 ```
 
 ## Development
@@ -202,7 +256,7 @@ docker compose run --rm backend alembic current      # show applied revision
 docker compose run --rm backend alembic downgrade -1 # roll back one step
 ```
 
-Always review generated migrations before committing them.
+Always review generated migrations before committing them, and commit the files in `backend/alembic/versions/`.
 
 **Logs**
 
@@ -210,11 +264,55 @@ Always review generated migrations before committing them.
 docker compose logs -f backend
 ```
 
+## Testing
+
+**Backend** (pytest, real PostgreSQL). The suite drops and recreates tables, so use a throwaway database. It refuses to run unless the database name ends with `test`.
+
+```bash
+docker run -d --name pg-test -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
+  -e POSTGRES_DB=test -p 55432:5432 postgres:16-alpine
+
+cd backend
+python -m venv .venv
+source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+
+export DATABASE_URL=postgresql+psycopg2://test:test@127.0.0.1:55432/test
+                                     # PowerShell: $env:DATABASE_URL = "postgresql+psycopg2://test:test@127.0.0.1:55432/test"
+pytest -q
+ruff check .
+```
+
+Emails are captured in memory and rate limiting is switched off during tests.
+
+**Frontend** (Vitest)
+
+```bash
+cd frontend
+npm ci
+npm test
+npm run build
+```
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and on pull requests:
+
+| Job | Steps |
+|---|---|
+| `backend` | Ruff lint, `alembic upgrade head` on an empty database, `alembic check` (models and migrations in sync), pytest against a PostgreSQL service |
+| `frontend` | `npm ci`, Vitest, production build |
+| `docker` | Validates `docker-compose.yml` and builds the backend and frontend images |
+
+If `alembic check` fails, you changed `models.py` without generating a migration.
+
 ## Security notes
 
-- Passwords are hashed with bcrypt; refresh and reset tokens are stored only as SHA-256 hashes.
+- Passwords are hashed with bcrypt; refresh, reset and verification tokens are stored only as SHA-256 hashes.
 - Refresh tokens live in httpOnly, `SameSite=Lax` cookies scoped to `/api/auth`, rotate on every use, and reuse of an old token revokes all of that user's sessions.
 - Rate limiting reads the client IP from the `X-Real-IP` header set by Nginx, so keep Nginx as the only public entry point.
+- Grafana Alloy mounts the Docker socket (read-only) to discover containers. Read-only still grants broad access to the Docker API, so on shared production hosts prefer a Docker log driver or a socket proxy.
+- The audit log is append-only from the application's point of view; there is no API to edit or delete entries.
 
 ### Before going to production
 
@@ -224,15 +322,16 @@ docker compose logs -f backend
 - [ ] Do not expose pgAdmin, Prometheus, Grafana or Mailpit publicly (or protect them)
 - [ ] Remove the `alembic/versions` bind mount from the `backend` service
 - [ ] Configure a real SMTP provider and remove `mailpit`
+- [ ] Review the Alloy Docker socket mount and Loki retention (`retention_period`)
 - [ ] Set up database backups
 
 ## Roadmap
 
-- [ ] Audit log (who changed which user or role)
-- [ ] Centralized logging with Loki + Promtail
-- [ ] Automated tests and CI pipeline
 - [ ] Two-factor authentication
+- [ ] Rate-limit tests (Redis service in CI)
+- [ ] Image publishing to GitHub Container Registry (CD)
+- [ ] Grafana alert rules (failed-login spikes, error rates)
 
 ## License
 
-MIT. Add a `LICENSE` file before publishing.
+MIT.
