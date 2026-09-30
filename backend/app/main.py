@@ -32,8 +32,8 @@ api = APIRouter(prefix="/api")
 api.include_router(auth.router)
 api.include_router(users.router)
 api.include_router(roles.router)
-app.include_router(api)
 api.include_router(audit_logs.router)
+app.include_router(api)
 
 
 @app.get("/api/health", tags=["system"])

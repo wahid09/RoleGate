@@ -20,7 +20,6 @@ const router = createRouter({
     { path: '/forgot-password', component: ForgotPassword, meta: { guest: true } },
     { path: '/reset-password', component: ResetPassword, meta: { guest: true } },
     { path: '/verify-email', component: VerifyEmail },
-    { path: 'audit', component: AuditLog, meta: { permission: 'audit:read' } },
     {
       path: '/',
       component: AdminLayout,
@@ -29,6 +28,7 @@ const router = createRouter({
         { path: '', component: Dashboard, meta: { permission: 'dashboard:view' } },
         { path: 'users', component: Users, meta: { permission: 'users:read' } },
         { path: 'roles', component: Roles, meta: { permission: 'roles:read' } },
+        { path: 'audit', component: AuditLog, meta: { permission: 'audit:read' } },
         { path: 'profile', component: Profile },
       ],
     },
