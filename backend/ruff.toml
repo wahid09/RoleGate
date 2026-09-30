@@ -1,4 +1,8 @@
 extend-exclude = ["alembic/versions"]
 
+[lint]
+# FastAPI's dependency injection needs calls in argument defaults (Depends, Query, Cookie...)
+ignore = ["B008"]
+
 [lint.per-file-ignores]
 "tests/conftest.py" = ["E402"]
