@@ -52,6 +52,7 @@ def seed(db: Session) -> None:
                 full_name="Administrator",
                 email=email,
                 hashed_password=hash_password(settings.FIRST_ADMIN_PASSWORD),
+                email_verified=True,
                 roles=[roles["admin"]],
             )
         )

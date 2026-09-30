@@ -20,5 +20,10 @@ class Settings(BaseSettings):
     FIRST_ADMIN_EMAIL: str
     FIRST_ADMIN_PASSWORD: str
 
+    REDIS_URL: str = "redis://redis:6379/0"
+    LOGIN_MAX_FAILURES: int = 5
+    LOGIN_LOCK_SECONDS: int = 900
+    VERIFY_TOKEN_EXPIRE_HOURS: int = 24
+
 
 settings = Settings()

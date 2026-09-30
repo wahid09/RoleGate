@@ -2,25 +2,41 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuth } from '../stores/auth'
-import { errorMessage } from '../api/http'
+import http, { errorMessage } from '../api/http'
 
 const auth = useAuth()
 const router = useRouter()
 const email = ref('')
 const password = ref('')
 const error = ref('')
+const info = ref('')
+const unverified = ref(false)
 const loading = ref(false)
 
 async function submit() {
   error.value = ''
+  info.value = ''
+  unverified.value = false
   loading.value = true
   try {
     await auth.login(email.value, password.value)
     router.push('/')
   } catch (e) {
     error.value = errorMessage(e)
+    unverified.value = e.response?.status === 403 && error.value === 'Email not verified'
   } finally {
     loading.value = false
+  }
+}
+
+async function resend() {
+  try {
+    const { data } = await http.post('/auth/resend-verification', { email: email.value })
+    info.value = data.message
+    error.value = ''
+    unverified.value = false
+  } catch (e) {
+    error.value = errorMessage(e)
   }
 }
 </script>
@@ -33,10 +49,19 @@ async function submit() {
           <i class="bi bi-shield-check text-primary fs-1"></i>
           <h4 class="mt-2">Sign in</h4>
         </div>
+
         <div v-if="$route.query.registered" class="alert alert-success py-2">
-          Account created. Please sign in.
+          Account created. Check your inbox to verify your email, then sign in.
         </div>
-        <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
+        <div v-if="$route.query.reset" class="alert alert-success py-2">
+          Password updated. Please sign in.
+        </div>
+        <div v-if="info" class="alert alert-success py-2">{{ info }}</div>
+        <div v-if="error" class="alert alert-danger py-2">
+          {{ error }}
+          <button v-if="unverified" type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                  @click="resend">Resend verification email</button>
+        </div>
 
         <form @submit.prevent="submit">
           <div class="mb-3">
@@ -58,11 +83,6 @@ async function submit() {
         <p class="text-center mt-3 mb-0 small">
           No account? <router-link to="/register">Register</router-link>
         </p>
-
-        <div v-if="$route.query.reset" class="alert alert-success py-2">
-          Password updated. Please sign in.
-        </div>
-
       </div>
     </div>
   </div>

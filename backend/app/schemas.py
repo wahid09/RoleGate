@@ -41,6 +41,7 @@ class UserOut(BaseModel):
     full_name: str
     email: EmailStr
     is_active: bool
+    email_verified: bool
     created_at: datetime
     roles: list[RoleOut] = []
 
@@ -72,3 +73,10 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=72)
     role_ids: list[int] = []
     is_active: bool = True
+
+class VerifyIn(BaseModel):
+    token: str
+
+class ChangePasswordIn(BaseModel):
+    current_password: str = Field(min_length=1, max_length=72)
+    new_password: str = Field(min_length=8, max_length=72)

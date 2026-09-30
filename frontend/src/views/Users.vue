@@ -83,6 +83,7 @@ onMounted(load)
                 <span :class="['badge', u.is_active ? 'text-bg-success' : 'text-bg-danger']">
                   {{ u.is_active ? 'Active' : 'Disabled' }}
                 </span>
+                <span v-if="!u.email_verified" class="badge text-bg-warning ms-1">Unverified</span>
               </td>
               <td v-if="auth.can('users:update')" class="text-end">
                 <button v-if="auth.can('roles:read')" class="btn btn-sm btn-outline-primary me-1" @click="edit(u)">

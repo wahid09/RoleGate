@@ -10,6 +10,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..emailer import send_email
+from ..ratelimit import login_failed, login_locked, login_ok, rate_limit
 from ..security import (
     create_access_token,
     generate_token,
@@ -21,6 +22,7 @@ from ..security import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 COOKIE = "refresh_token"
 COOKIE_PATH = "/api/auth"
+NOT_VERIFIED = "Email not verified"   # the frontend matches on this text
 
 
 def _now() -> datetime:
@@ -61,8 +63,32 @@ def _access(user: models.User) -> dict:
     return {"access_token": create_access_token(str(user.id)), "token_type": "bearer"}
 
 
-@router.post("/register", response_model=schemas.UserOut, status_code=201)
-def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
+def _send_verification(db: Session, user: models.User, background: BackgroundTasks) -> None:
+    raw = generate_token()
+    db.add(
+        models.EmailVerificationToken(
+            user_id=user.id,
+            token_hash=hash_token(raw),
+            expires_at=_now() + timedelta(hours=settings.VERIFY_TOKEN_EXPIRE_HOURS),
+        )
+    )
+    db.commit()
+    link = f"{settings.FRONTEND_URL}/verify-email?token={raw}"
+    body = (
+        f"Hi {user.full_name},\n\n"
+        f"Please confirm your email address (link valid for {settings.VERIFY_TOKEN_EXPIRE_HOURS} hours):\n"
+        f"{link}\n\nIf you didn't create an account, you can ignore this email."
+    )
+    background.add_task(send_email, user.email, "Verify your email address", body)
+
+
+@router.post(
+    "/register",
+    response_model=schemas.UserOut,
+    status_code=201,
+    dependencies=[Depends(rate_limit("register", 10, 3600))],
+)
+def register(data: schemas.RegisterIn, background: BackgroundTasks, db: Session = Depends(get_db)):
     email = data.email.lower()
     if db.scalar(select(models.User).where(models.User.email == email)):
         raise HTTPException(400, "Email already registered")
@@ -71,25 +97,67 @@ def register(data: schemas.RegisterIn, db: Session = Depends(get_db)):
         full_name=data.full_name,
         email=email,
         hashed_password=hash_password(data.password),
+        email_verified=False,
         roles=[default_role] if default_role else [],
     )
     db.add(user)
     db.commit()
     db.refresh(user)
+    _send_verification(db, user, background)
+    db.refresh(user)
     return user
 
 
-@router.post("/login", response_model=schemas.Token)
+@router.post("/verify-email", dependencies=[Depends(rate_limit("verify", 20, 900))])
+def verify_email(data: schemas.VerifyIn, db: Session = Depends(get_db)):
+    row = db.scalar(
+        select(models.EmailVerificationToken).where(
+            models.EmailVerificationToken.token_hash == hash_token(data.token)
+        )
+    )
+    if not row or row.expires_at < _now():
+        raise HTTPException(400, "Invalid or expired verification link")
+    user = db.get(models.User, row.user_id)
+    user.email_verified = True
+    row.used = True
+    db.commit()
+    return {"message": "Email verified. You can now sign in."}
+
+
+@router.post("/resend-verification", dependencies=[Depends(rate_limit("resend", 3, 3600))])
+def resend_verification(
+    data: schemas.ForgotIn, background: BackgroundTasks, db: Session = Depends(get_db)
+):
+    user = db.scalar(select(models.User).where(models.User.email == data.email.lower()))
+    if user and user.is_active and not user.email_verified:
+        _send_verification(db, user, background)
+    return {"message": "If that account still needs verification, a new email has been sent."}
+
+
+@router.post(
+    "/login",
+    response_model=schemas.Token,
+    dependencies=[Depends(rate_limit("login", 10, 60))],
+)
 def login(
     response: Response,
     form: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
 ):
-    user = db.scalar(select(models.User).where(models.User.email == form.username.lower()))
+    email = form.username.lower()
+    if login_locked(email):
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+
+    user = db.scalar(select(models.User).where(models.User.email == email))
     if not user or not verify_password(form.password, user.hashed_password):
+        login_failed(email)
         raise HTTPException(401, "Incorrect email or password")
     if not user.is_active:
         raise HTTPException(403, "Account is disabled")
+    if not user.email_verified:
+        raise HTTPException(403, NOT_VERIFIED)
+
+    login_ok(email)
     _issue_refresh(db, user, response)
     return _access(user)
 
@@ -143,7 +211,25 @@ def me(user: models.User = Depends(get_current_user)):
     return user
 
 
-@router.post("/forgot-password")
+@router.post("/change-password", dependencies=[Depends(rate_limit("change-pw", 5, 900))])
+def change_password(
+    data: schemas.ChangePasswordIn,
+    response: Response,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not verify_password(data.current_password, user.hashed_password):
+        raise HTTPException(400, "Current password is incorrect")   # 400, not 401, on purpose
+    if data.current_password == data.new_password:
+        raise HTTPException(400, "New password must be different from the current one")
+    user.hashed_password = hash_password(data.new_password)
+    db.commit()
+    _revoke_all(db, user.id)              # sign out all other devices...
+    _issue_refresh(db, user, response)    # ...but keep this one signed in
+    return {"message": "Password changed. Other devices have been signed out."}
+
+
+@router.post("/forgot-password", dependencies=[Depends(rate_limit("forgot", 5, 900))])
 def forgot_password(
     data: schemas.ForgotIn,
     background: BackgroundTasks,
@@ -167,11 +253,10 @@ def forgot_password(
             f"{link}\n\nIf you didn't request this, you can ignore this email."
         )
         background.add_task(send_email, user.email, "Reset your password", body)
-    # same answer whether or not the email exists, to avoid account enumeration
     return {"message": "If that email is registered, a reset link has been sent."}
 
 
-@router.post("/reset-password")
+@router.post("/reset-password", dependencies=[Depends(rate_limit("reset", 10, 900))])
 def reset_password(data: schemas.ResetIn, db: Session = Depends(get_db)):
     row = db.scalar(
         select(models.PasswordResetToken).where(
@@ -184,5 +269,5 @@ def reset_password(data: schemas.ResetIn, db: Session = Depends(get_db)):
     user.hashed_password = hash_password(data.new_password)
     row.used = True
     db.commit()
-    _revoke_all(db, user.id)              # sign out every device
+    _revoke_all(db, user.id)
     return {"message": "Password updated. You can now sign in."}

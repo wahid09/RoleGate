@@ -9,6 +9,7 @@ import Roles from '../views/Roles.vue'
 import Profile from '../views/Profile.vue'
 import ForgotPassword from '../views/ForgotPassword.vue'
 import ResetPassword from '../views/ResetPassword.vue'
+import VerifyEmail from '../views/VerifyEmail.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -17,6 +18,7 @@ const router = createRouter({
     { path: '/register', component: Register, meta: { guest: true } },
     { path: '/forgot-password', component: ForgotPassword, meta: { guest: true } },
     { path: '/reset-password', component: ResetPassword, meta: { guest: true } },
+    { path: '/verify-email', component: VerifyEmail },
     {
       path: '/',
       component: AdminLayout,
