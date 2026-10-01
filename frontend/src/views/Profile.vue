@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import http, { errorMessage } from '../api/http'
 import { useAuth } from '../stores/auth'
+import TwoFactorCard from '../components/TwoFactorCard.vue'
 
 const auth = useAuth()
 const form = ref({ current_password: '', new_password: '', confirm: '' })
@@ -58,11 +59,12 @@ async function submit() {
         </dl>
       </div>
     </div>
-
+    <TwoFactorCard class="mb-4" />
     <div class="card border-0 shadow-sm">
       <div class="card-header bg-white fw-semibold">
         <i class="bi bi-key me-1"></i> Change password
       </div>
+
       <div class="card-body">
         <div v-if="error" class="alert alert-danger py-2">{{ error }}</div>
         <div v-if="success" class="alert alert-success py-2">{{ success }}</div>

@@ -135,9 +135,28 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
 
+  db-backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/backup.sh"]
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-7}
+    volumes:
+      - ./scripts/backup.sh:/backup.sh:ro
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   promdata:
   grafanadata:
   lokidata:
   alloydata:
+  backups:

@@ -10,3 +10,6 @@ python-multipart==0.0.*
 prometheus-fastapi-instrumentator==7.*
 alembic==1.13.*
 redis==5.*
+pyotp==2.9.*
+segno>=1.6
+cryptography>=43

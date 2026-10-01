@@ -11,8 +11,17 @@ export const useAuth = defineStore('auth', {
     async login(email, password) {
       const body = new URLSearchParams({ username: email, password })
       const { data } = await http.post('/auth/login', body)
-      this.token = data.access_token
-      localStorage.setItem('token', this.token)
+      if (data.mfa_required) return { mfaRequired: true, mfaToken: data.mfa_token }
+      await this.finishLogin(data.access_token)
+      return { mfaRequired: false }
+    },
+    async loginWithCode(mfaToken, code) {
+      const { data } = await http.post('/auth/login/2fa', { mfa_token: mfaToken, code })
+      await this.finishLogin(data.access_token)
+    },
+    async finishLogin(accessToken) {
+      this.token = accessToken
+      localStorage.setItem('token', accessToken)
       await this.fetchMe()
     },
     async register(payload) {

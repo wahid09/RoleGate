@@ -16,6 +16,15 @@ async function load() {
   users.value = (await http.get('/users')).data
   if (auth.can('roles:read')) roles.value = (await http.get('/roles')).data
 }
+async function reset2fa(u) {
+  if (!confirm(`Remove two-factor authentication for ${u.email}?`)) return
+  try {
+    await http.delete(`/users/${u.id}/2fa`)
+    await load()
+  } catch (e) {
+    error.value = errorMessage(e)
+  }
+}
 
 function edit(u) {
   editing.value = u
@@ -84,10 +93,14 @@ onMounted(load)
                   {{ u.is_active ? 'Active' : 'Disabled' }}
                 </span>
                 <span v-if="!u.email_verified" class="badge text-bg-warning ms-1">Unverified</span>
+                <span v-if="u.totp_enabled" class="badge text-bg-info ms-1">2FA</span>
               </td>
               <td v-if="auth.can('users:update')" class="text-end">
                 <button v-if="auth.can('roles:read')" class="btn btn-sm btn-outline-primary me-1" @click="edit(u)">
                   <i class="bi bi-pencil"></i> Roles
+                </button>
+                <button v-if="u.totp_enabled" class="btn btn-sm btn-outline-warning me-1" @click="reset2fa(u)">
+                  Reset 2FA
                 </button>
                 <button class="btn btn-sm btn-outline-secondary" @click="toggle(u)">
                   {{ u.is_active ? 'Disable' : 'Enable' }}

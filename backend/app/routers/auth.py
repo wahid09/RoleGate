@@ -10,7 +10,7 @@ from fastapi import (
     Response,
 )
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from .. import audit, models, schemas
@@ -21,10 +21,19 @@ from ..emailer import send_email
 from ..ratelimit import login_failed, login_locked, login_ok, rate_limit
 from ..security import (
     create_access_token,
+    create_mfa_token,
+    decode_mfa_token,
+    decrypt_secret,
+    encrypt_secret,
     generate_token,
     hash_password,
     hash_token,
+    new_recovery_codes,
+    new_totp_secret,
+    qr_data_uri,
+    totp_uri,
     verify_password,
+    verify_totp,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -70,6 +79,31 @@ def _revoke_all(db: Session, user_id: int) -> None:
 def _access(user: models.User) -> dict:
     return {"access_token": create_access_token(str(user.id)), "token_type": "bearer"}
 
+def _consume_code(db: Session, user: models.User, raw: str) -> bool:
+    """Check an authenticator code or a recovery code. Marks it used; the caller commits."""
+    code = raw.strip().replace(" ", "").lower()
+
+    if code.isascii() and code.isdigit() and len(code) == 6:
+        secret = decrypt_secret(user.totp_secret) if user.totp_secret else None
+        if secret is None:
+            return False
+        step = verify_totp(secret, code, user.totp_last_step)
+        if step is None:
+            return False
+        user.totp_last_step = step
+        return True
+
+    row = db.scalar(
+        select(models.RecoveryCode).where(
+            models.RecoveryCode.user_id == user.id,
+            models.RecoveryCode.code_hash == hash_token(code),
+            models.RecoveryCode.used.is_(False),
+        )
+    )
+    if row is None:
+        return False
+    row.used = True
+    return True
 
 def _send_verification(db: Session, user: models.User, background: BackgroundTasks) -> None:
     raw = generate_token()
@@ -150,7 +184,7 @@ def resend_verification(
 
 @router.post(
     "/login",
-    response_model=schemas.Token,
+    response_model=schemas.LoginOut,
     dependencies=[Depends(rate_limit("login", 10, 60))],
 )
 def login(
@@ -175,10 +209,108 @@ def login(
     if not user.email_verified:
         raise HTTPException(403, NOT_VERIFIED)
 
+    if user.totp_enabled:
+        # password alone is not enough: no session yet, and the failure counter is NOT reset
+        return {"mfa_required": True, "mfa_token": create_mfa_token(str(user.id))}
+
     login_ok(email)
     audit.record(db, request, "auth.login", actor=user)
     _issue_refresh(db, user, response)         # commits the audit row too
     return _access(user)
+
+
+@router.post(
+    "/login/2fa",
+    response_model=schemas.Token,
+    dependencies=[Depends(rate_limit("login-2fa", 10, 300))],
+)
+def login_2fa(
+    data: schemas.TwoFactorLoginIn,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+):
+    user_id = decode_mfa_token(data.mfa_token)
+    user = db.get(models.User, user_id) if user_id else None
+    if not user or not user.is_active or not user.totp_enabled:
+        raise HTTPException(400, "Sign-in session expired. Please start again.")
+    if login_locked(user.email):
+        raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
+
+    if not _consume_code(db, user, data.code):
+        login_failed(user.email)
+        audit.record(db, request, "auth.2fa_failed", actor=user)
+        db.commit()
+        raise HTTPException(400, "Invalid code")
+
+    login_ok(user.email)
+    audit.record(db, request, "auth.login", actor=user, detail={"mfa": True})
+    _issue_refresh(db, user, response)         # also commits the consumed code
+    return _access(user)
+
+
+@router.post("/2fa/setup", response_model=schemas.TwoFactorSetupOut)
+def two_factor_setup(user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.totp_enabled:
+        raise HTTPException(400, "Two-factor authentication is already enabled")
+    secret = new_totp_secret()
+    user.totp_secret = encrypt_secret(secret)
+    user.totp_last_step = None
+    db.commit()
+    uri = totp_uri(secret, user.email)
+    return {"secret": secret, "otpauth_uri": uri, "qr_svg": qr_data_uri(uri)}
+
+
+@router.post(
+    "/2fa/enable",
+    response_model=schemas.RecoveryCodesOut,
+    dependencies=[Depends(rate_limit("2fa-enable", 10, 900))],
+)
+def two_factor_enable(
+    data: schemas.CodeIn,
+    request: Request,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.totp_enabled:
+        raise HTTPException(400, "Two-factor authentication is already enabled")
+    secret = decrypt_secret(user.totp_secret) if user.totp_secret else None
+    if secret is None:
+        raise HTTPException(400, "Start the setup first")
+    step = verify_totp(secret, data.code.strip(), user.totp_last_step)
+    if step is None:
+        raise HTTPException(400, "Invalid code")
+
+    user.totp_enabled = True
+    user.totp_last_step = step
+    codes = new_recovery_codes()
+    db.execute(delete(models.RecoveryCode).where(models.RecoveryCode.user_id == user.id))
+    db.add_all(models.RecoveryCode(user_id=user.id, code_hash=hash_token(c)) for c in codes)
+    audit.record(db, request, "auth.2fa.enable", actor=user, target_type="user", target_id=user.id)
+    db.commit()
+    return {"recovery_codes": codes}
+
+
+@router.post("/2fa/disable", dependencies=[Depends(rate_limit("2fa-disable", 5, 900))])
+def two_factor_disable(
+    data: schemas.TwoFactorDisableIn,
+    request: Request,
+    user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not user.totp_enabled:
+        raise HTTPException(400, "Two-factor authentication is not enabled")
+    if not verify_password(data.password, user.hashed_password) or not _consume_code(db, user, data.code):
+        db.rollback()
+        raise HTTPException(400, "Password or code is incorrect")
+
+    user.totp_enabled = False
+    user.totp_secret = None
+    user.totp_last_step = None
+    db.execute(delete(models.RecoveryCode).where(models.RecoveryCode.user_id == user.id))
+    audit.record(db, request, "auth.2fa.disable", actor=user, target_type="user", target_id=user.id)
+    db.commit()
+    return {"message": "Two-factor authentication turned off."}
 
 
 @router.post("/refresh", response_model=schemas.Token)

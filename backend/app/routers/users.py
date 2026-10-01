@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from .. import audit, models, schemas
@@ -88,6 +88,30 @@ def set_active(
     audit.record(
         db, request, "user.active.update", actor=actor, target_type="user", target_id=user.id,
         detail={"email": user.email, "is_active": body.is_active},
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+@router.delete("/{user_id}/2fa", response_model=schemas.UserOut)
+def reset_two_factor(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: models.User = Depends(require_permission("users:update")),
+):
+    user = db.get(models.User, user_id)
+    if not user:
+        raise HTTPException(404, "User not found")
+    if not user.totp_enabled:
+        raise HTTPException(400, "Two-factor authentication is not enabled for this user")
+    user.totp_enabled = False
+    user.totp_secret = None
+    user.totp_last_step = None
+    db.execute(delete(models.RecoveryCode).where(models.RecoveryCode.user_id == user.id))
+    audit.record(
+        db, request, "user.2fa.reset", actor=actor, target_type="user", target_id=user.id,
+        detail={"email": user.email},
     )
     db.commit()
     db.refresh(user)

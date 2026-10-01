@@ -60,6 +60,9 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     roles: Mapped[list[Role]] = relationship(secondary=user_roles, lazy="selectin")
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)  # encrypted
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    totp_last_step: Mapped[int | None] = mapped_column(nullable=True)  # replay protection
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
@@ -108,3 +111,11 @@ class AuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+class RecoveryCode(Base):
+    __tablename__ = "recovery_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), index=True)
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

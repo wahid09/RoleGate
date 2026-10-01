@@ -1,0 +1,204 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: reliability
+    folder: RoleGate
+    interval: 1m
+    rules:
+      # ---------------------------------------------------------------
+      - uid: server-errors
+        title: Server errors
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: 'sum(increase(http_requests_total{status="5xx"}[5m]))'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              conditions:
+                - evaluator: { params: [5], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 1m
+        annotations:
+          summary: The API is returning server errors
+          description: '{{ $values.B.Value }} responses with a 5xx status in the last 5 minutes. Check `docker compose logs backend`.'
+        labels:
+          severity: critical
+
+      # ---------------------------------------------------------------
+      - uid: slow-responses
+        title: Slow responses
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              # p95 over all endpoints; ignored while traffic is near zero (under 0.05 requests/s)
+              expr: 'histogram_quantile(0.95, sum by (le) (rate(http_request_duration_highr_seconds_bucket[5m]))) and (sum(rate(http_requests_total[5m])) > 0.05)'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              conditions:
+                - evaluator: { params: [1], type: gt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: API responses are slow
+          description: '95th percentile response time is {{ $values.B.Value }} seconds (threshold 1 second).'
+        labels:
+          severity: warning
+
+      # ---------------------------------------------------------------
+      - uid: backend-down
+        title: Backend is down
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: 'up{job="fastapi"}'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: Prometheus cannot reach the API
+          description: 'The backend has not answered metrics scrapes for 2 minutes. Check `docker compose ps` and `docker compose logs backend`.'
+        labels:
+          severity: critical
+
+      # ---------------------------------------------------------------
+      - uid: backup-missing
+        title: Database backup missing
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: loki
+            model:
+              datasource: { type: loki, uid: loki }
+              editorMode: code
+              expr: 'sum(count_over_time({service="db-backup"} |= "backup ok" [26h]))'
+              queryType: instant
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              expression: A
+              reducer: last
+              refId: B
+              type: reduce
+          - refId: C
+            relativeTimeRange: { from: 0, to: 0 }
+            datasourceUid: '__expr__'
+            model:
+              datasource: { type: __expr__, uid: '__expr__' }
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [C] }
+                  reducer: { params: [], type: last }
+                  type: query
+              expression: B
+              refId: C
+              type: threshold
+        # no "backup ok" line at all in 26h means the query returns nothing: that IS the alert
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: No successful database backup in 26 hours
+          description: 'Check `docker compose logs db-backup`.'
+        labels:
+          severity: critical

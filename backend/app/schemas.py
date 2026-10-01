@@ -41,6 +41,7 @@ class UserOut(BaseModel):
     full_name: str
     email: EmailStr
     is_active: bool
+    totp_enabled: bool
     email_verified: bool
     created_at: datetime
     roles: list[RoleOut] = []
@@ -99,3 +100,33 @@ class AuditPage(BaseModel):
     total: int
     page: int
     page_size: int
+
+class LoginOut(BaseModel):
+    access_token: str | None = None
+    token_type: str = "bearer"
+    mfa_required: bool = False
+    mfa_token: str | None = None
+
+
+class TwoFactorSetupOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_svg: str
+
+
+class CodeIn(BaseModel):
+    code: str = Field(min_length=6, max_length=20)
+
+
+class TwoFactorLoginIn(BaseModel):
+    mfa_token: str
+    code: str = Field(min_length=6, max_length=20)
+
+
+class TwoFactorDisableIn(BaseModel):
+    password: str = Field(min_length=1, max_length=72)
+    code: str = Field(min_length=6, max_length=20)
+
+
+class RecoveryCodesOut(BaseModel):
+    recovery_codes: list[str]
