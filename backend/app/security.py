@@ -1,18 +1,17 @@
+import base64
 import hashlib
+import hmac
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-
-from .config import settings
-import base64
-import hmac
-import time
-
 import pyotp
 import segno
 from cryptography.fernet import Fernet, InvalidToken
+
+from .config import settings
 
 
 def _b(password: str) -> bytes:
