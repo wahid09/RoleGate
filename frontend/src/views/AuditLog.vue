@@ -67,6 +67,7 @@ onMounted(load)
           <option value="auth.login_failed">Failed logins</option>
           <option value="user.">User changes</option>
           <option value="role.">Role changes</option>
+          <option value="permission.">Permission changes</option>
         </select>
       </div>
       <div class="col-12 col-md-5">

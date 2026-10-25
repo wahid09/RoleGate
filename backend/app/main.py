@@ -4,7 +4,7 @@ from fastapi import APIRouter, FastAPI
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from .database import SessionLocal
-from .routers import audit_logs, auth, roles, users
+from .routers import audit_logs, auth, permissions, roles, users
 from .seed import seed
 
 # @asynccontextmanager
@@ -29,6 +29,7 @@ app = FastAPI(
 )
 
 api = APIRouter(prefix="/api")
+api.include_router(permissions.router)
 api.include_router(auth.router)
 api.include_router(users.router)
 api.include_router(roles.router)

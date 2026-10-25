@@ -3,14 +3,15 @@ import { useAuth } from '../stores/auth'
 import AdminLayout from '../layouts/AdminLayout.vue'
 import Login from '../views/Login.vue'
 import Register from '../views/Register.vue'
-import Dashboard from '../views/Dashboard.vue'
-import Users from '../views/Users.vue'
-import Roles from '../views/Roles.vue'
-import Profile from '../views/Profile.vue'
 import ForgotPassword from '../views/ForgotPassword.vue'
 import ResetPassword from '../views/ResetPassword.vue'
 import VerifyEmail from '../views/VerifyEmail.vue'
+import Dashboard from '../views/Dashboard.vue'
+import Users from '../views/Users.vue'
+import Roles from '../views/Roles.vue'
+import Permissions from '../views/Permissions.vue'
 import AuditLog from '../views/AuditLog.vue'
+import Profile from '../views/Profile.vue'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -26,10 +27,19 @@ const router = createRouter({
       meta: { auth: true },
       children: [
         { path: '', component: Dashboard, meta: { permission: 'dashboard:view' } },
-        { path: 'users', component: Users, meta: { permission: 'users:read' } },
-        { path: 'roles', component: Roles, meta: { permission: 'roles:read' } },
-        { path: 'audit', component: AuditLog, meta: { permission: 'audit:read' } },
         { path: 'profile', component: Profile },
+
+        // Dev Console
+        { path: 'dev', redirect: '/dev/users' },
+        { path: 'dev/users', component: Users, meta: { permission: 'users:read' } },
+        { path: 'dev/roles', component: Roles, meta: { permission: 'roles:read' } },
+        { path: 'dev/permissions', component: Permissions, meta: { permission: 'permissions:read' } },
+        { path: 'dev/audit', component: AuditLog, meta: { permission: 'audit:read' } },
+
+        // old URLs
+        { path: 'users', redirect: '/dev/users' },
+        { path: 'roles', redirect: '/dev/roles' },
+        { path: 'audit', redirect: '/dev/audit' },
       ],
     },
     { path: '/:pathMatch(.*)*', redirect: '/' },

@@ -15,6 +15,10 @@ PERMISSIONS = [
     ("roles:delete", "Delete roles"),
     ("users:create", "Create users"),
     ("audit:read", "View audit log"),
+    ("permissions:read", "List permissions"),
+    ("permissions:create", "Create permissions"),
+    ("permissions:update", "Edit permissions"),
+    ("permissions:delete", "Delete permissions"),
 ]
 
 DEFAULT_ROLES = {
@@ -42,7 +46,9 @@ def seed(db: Session) -> None:
             role.permissions = [perms[c] for c in codes]
             db.add(role)
         elif name == "admin":  # admin always gets every permission
-            role.permissions = list(perms.values())
+            #role.permissions = list(perms.values())
+            role.permissions = list(db.scalars(select(Permission)).all())
+
         roles[name] = role
     db.flush()
 

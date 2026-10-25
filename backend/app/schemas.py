@@ -130,3 +130,12 @@ class TwoFactorDisableIn(BaseModel):
 
 class RecoveryCodesOut(BaseModel):
     recovery_codes: list[str]
+
+class PermissionIn(BaseModel):
+    code: str = Field(min_length=3, max_length=100, pattern=r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$")
+    description: str = Field(default="", max_length=255)
+
+
+class PermissionAdminOut(PermissionOut):
+    builtin: bool
+    roles: list[str] = []
