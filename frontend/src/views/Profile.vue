@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import http, { errorMessage } from '../api/http'
 import { useAuth } from '../stores/auth'
 import TwoFactorCard from '../components/TwoFactorCard.vue'
+import PasskeysCard from '../components/PasskeysCard.vue'
+import SessionsCard from '../components/SessionsCard.vue'
 
 const auth = useAuth()
 const form = ref({ current_password: '', new_password: '', confirm: '' })
@@ -60,6 +62,8 @@ async function submit() {
       </div>
     </div>
     <TwoFactorCard class="mb-4" />
+    <PasskeysCard class="mb-4" />
+    <SessionsCard class="mb-4" />
     <div class="card border-0 shadow-sm">
       <div class="card-header bg-white fw-semibold">
         <i class="bi bi-key me-1"></i> Change password

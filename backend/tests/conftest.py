@@ -8,6 +8,8 @@ os.environ.setdefault("FIRST_ADMIN_EMAIL", "admin@example.com")
 os.environ.setdefault("FIRST_ADMIN_PASSWORD", "Admin@12345")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:56379/0")
+os.environ.setdefault("WEBAUTHN_RP_ID", "localhost")
+os.environ.setdefault("WEBAUTHN_ORIGINS", "http://localhost")
 
 import pytest
 from fastapi.testclient import TestClient

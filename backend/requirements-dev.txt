@@ -5,3 +5,4 @@ ruff>=0.8
 pyotp==2.9.*
 segno>=1.6
 cryptography>=43
+webauthn>=2.5,<3

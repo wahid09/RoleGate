@@ -15,6 +15,8 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 - Login with short-lived JWT access tokens (15 min) and rotating refresh tokens in httpOnly cookies, with reuse detection
 - Forgot / reset password by email
 - Change password from the profile page (other devices are signed out)
+- Two-factor authentication: TOTP authenticator apps (with single-use recovery codes) and/or WebAuthn passkeys, plus an admin reset
+- Session management: see every signed-in device (browser, OS, IP, last active) and sign out one or all others
 - Redis rate limiting on sensitive endpoints, plus per-account lockout after repeated failed logins
 
 **Authorization (RBAC)**
@@ -30,14 +32,15 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 
 **Admin dashboard**
 - Responsive Bootstrap 5 layout with collapsible sidebar, header user menu and footer
-- Dashboard, Users (list, create, assign roles, enable/disable), Roles & Permissions, Audit Log, Profile
+- Dashboard, Profile, and a **Dev Console** sidebar group with four sub-modules: Users (list, create, assign roles, enable/disable), Roles, Permissions (full create/read/update/delete) and Audit Log
 
 **Infrastructure & operations**
 - Docker Compose for the whole stack, Nginx reverse proxy
 - PostgreSQL with pgAdmin, Alembic migrations
 - Metrics: Prometheus, Grafana, postgres-exporter, cAdvisor
 - Centralized logs: Loki + Grafana Alloy, searchable in Grafana
-- Alerting: Grafana alert rules for failed-login spikes and login throttling, delivered by email
+- Alerting: Grafana alert rules for failed logins, login throttling, server errors, slow responses, a downed backend and missing backups, delivered by email
+- Automated PostgreSQL backups to a Docker volume, with retention and a documented restore procedure
 - Releases: tagged versions publish Docker images to GitHub Container Registry
 - Mailpit to catch emails in development
 
@@ -125,8 +128,39 @@ Grafana alert rules, a contact point and a notification policy are provisioned f
 |---|---|---|
 | Failed login spike | more than 10 failed logins (HTTP 401) in 5 minutes | warning |
 | Login throttling triggered | more than 5 login requests rejected with HTTP 429 (rate limit or account lockout) in 5 minutes | critical |
+| Server errors | more than 5 HTTP 5xx responses in 5 minutes | critical |
+| Slow responses | 95th percentile response time above 1 second for 5 minutes | warning |
+| Backend is down | Prometheus cannot scrape the API for 2 minutes | critical |
+| Database backup missing | no successful backup logged in the last 26 hours | critical |
 
-Alerts are emailed to `ALERT_EMAIL` through Grafana's SMTP settings (Mailpit in development, so they appear at http://localhost:8025). The rules read the backend's access logs from Loki. Change thresholds in `monitoring/grafana/provisioning/alerting/rules.yml` and restart Grafana; provisioned rules are read-only in the Grafana UI.
+Alerts are emailed to `ALERT_EMAIL` through Grafana's SMTP settings (Mailpit in development, so they appear at http://localhost:8025). The login rules read the backend's access logs from Loki, the reliability rules use Prometheus metrics, and the backup rule watches the backup container's logs. Change thresholds in `rules.yml` and `reliability-rules.yml` under `monitoring/grafana/provisioning/alerting/` and restart Grafana; provisioned rules are read-only in the Grafana UI.
+
+## Database backups
+
+The `db-backup` service writes a compressed `pg_dump` of the database to the `backups` Docker volume at startup and then every `BACKUP_INTERVAL_HOURS` (default 24), and deletes dumps older than `BACKUP_KEEP_DAYS` (default 7). `latest.dump` always points at the newest file, and each success is logged as `backup ok`, which the "Database backup missing" alert watches.
+
+```bash
+docker compose exec db-backup ls -lh /backups                      # list backups
+docker compose cp db-backup:/backups/<file>.dump ./                # copy one out of the volume
+```
+
+**Check a backup** by restoring it into a scratch database:
+
+```bash
+docker compose exec db-backup sh -c 'createdb -T template0 restore_test \
+  && pg_restore --no-owner --dbname=restore_test /backups/latest.dump \
+  && psql -d restore_test -c "select count(*) from users"; dropdb restore_test'
+```
+
+**Restore for real** (this replaces the current data):
+
+```bash
+docker compose stop backend
+docker compose exec db-backup sh -c 'pg_restore --clean --if-exists --no-owner --dbname="$PGDATABASE" /backups/<file>.dump'
+docker compose start backend
+```
+
+The volume lives on the same host as the database, so also copy dumps somewhere else (another machine or object storage) on a schedule.
 
 ## Configuration
 
@@ -147,10 +181,14 @@ All settings live in `.env` (see `.env.example`).
 | `REDIS_URL` | Redis connection for rate limiting |
 | `RATE_LIMIT_ENABLED` | Set `false` to disable rate limiting and lockout (default `true`; the test suite turns it off) |
 | `LOGIN_MAX_FAILURES`, `LOGIN_LOCK_SECONDS` | Account lockout policy |
+| `WEBAUTHN_RP_ID` | Passkey relying-party ID: your site's domain without scheme or port (default `localhost`). **Changing it invalidates every registered passkey** |
+| `WEBAUTHN_RP_NAME` | Name shown in the browser's passkey prompt (default `RoleGate`) |
+| `WEBAUTHN_ORIGINS` | Comma-separated exact browser origins allowed to use passkeys (default `http://localhost,http://localhost:5173`) |
 | `FIRST_ADMIN_EMAIL`, `FIRST_ADMIN_PASSWORD` | Seeded administrator account |
 | `PGADMIN_EMAIL`, `PGADMIN_PASSWORD` | pgAdmin login |
 | `GRAFANA_USER`, `GRAFANA_PASSWORD` | Grafana login |
 | `ALERT_EMAIL` | Recipient of Grafana alert emails (default `admin@example.com`) |
+| `BACKUP_INTERVAL_HOURS`, `BACKUP_KEEP_DAYS` | Backup frequency and retention (defaults 24 and 7) |
 
 ## Roles and permissions
 
@@ -163,6 +201,7 @@ All settings live in `.env` (see `.env.example`).
 | `roles:read` | List roles and permissions |
 | `roles:create` / `roles:update` / `roles:delete` | Manage roles |
 | `audit:read` | View the audit log |
+| `permissions:read` / `permissions:create` / `permissions:update` / `permissions:delete` | Manage the permission catalogue (Dev Console → Permissions) |
 
 | Default role | Permissions |
 |---|---|
@@ -171,6 +210,38 @@ All settings live in `.env` (see `.env.example`).
 | `user` | `dashboard:view` (assigned on registration) |
 
 To add a permission, append it to `PERMISSIONS` in `backend/app/seed.py`, protect an endpoint with `Depends(require_permission("your:permission"))`, and (optionally) gate UI with `auth.can('your:permission')`.
+
+## Two-factor authentication
+
+Any user can turn on TOTP two-factor authentication from **Profile → Two-factor authentication**: scan the QR code with an authenticator app (Google Authenticator, Authy, 1Password, ...), confirm with a 6-digit code, and save the eight one-time recovery codes that are shown once.
+
+From then on, signing in is two steps: password, then a code from the app (or a recovery code). Codes cannot be replayed, wrong codes count towards the account lockout, and turning 2FA off requires the password plus a valid code. If someone loses both their device and their recovery codes, a user with `users:update` can click **Reset 2FA** on the Users page.
+
+## Passkeys (WebAuthn)
+
+Passkeys are a second factor, alongside TOTP. From **Profile → Passkeys** a user confirms their password, then registers a fingerprint, face unlock, device PIN or hardware security key. After that, signing in is two steps: password, then **Use a passkey**. If the account has both a passkey and an authenticator app, the sign-in page offers either.
+
+- The browser only allows passkeys on `https://` or `http://localhost`, and the origin must match `WEBAUTHN_ORIGINS` and `WEBAUTHN_RP_ID`. For production set, for example, `WEBAUTHN_RP_ID=example.com` and `WEBAUTHN_ORIGINS=https://example.com`.
+- Challenges are single-use, expire after 5 minutes and are stored in the database. The signature counter is checked on every sign-in, so a cloned authenticator is rejected.
+- Only the public key is stored. Adding or removing a passkey needs the account password; failed passkey attempts count towards the account lockout and are audited.
+- **Reset 2FA** on the Users page removes both the authenticator app and all passkeys.
+
+## Sessions
+
+**Profile → Signed-in devices** lists every device that is signed in to your account, with browser, OS, IP address, sign-in time and last activity, and lets you sign out a single device or all other devices.
+
+A session is one chain of rotating refresh tokens: the session ID stays the same each time the token rotates. Signing a device out revokes its refresh token, so it cannot get a new access token. An access token that was already issued stays valid until it expires (15 minutes by default). "Last active" updates whenever the device refreshes its token, so it is accurate to roughly that interval. Revoking a device is deliberately not treated as token theft: only reuse of an already-rotated token signs out every device.
+
+## Dev Console and permission management
+
+The sidebar groups the administration pages under **Dev Console**: Users, Roles, Permissions and Audit Log. Each entry only appears for users who hold its `*:read` permission, and the group hides itself when none apply. Old URLs such as `/users` redirect to `/dev/users`.
+
+The Permissions page manages the permission catalogue (`resource:action` codes, lowercase):
+
+- Built-in permissions (the ones seeded in `backend/app/seed.py`) can have their description edited, but cannot be renamed or deleted, because the code checks them by name.
+- Newly created permissions are granted to the `admin` role automatically and can be assigned to other roles on the Roles page.
+- A permission only protects something once an endpoint checks it with `Depends(require_permission("your:code"))`.
+- Deleting a permission removes it from every role that had it.
 
 ## Audit log
 
@@ -181,10 +252,15 @@ Each entry stores the actor (id and email snapshot), action, target, JSON detail
 | `auth.register` | Someone signs up |
 | `auth.login` / `auth.login_failed` | Successful / failed sign-in |
 | `auth.password.change` / `auth.password.reset` | Password changed or reset |
+| `auth.2fa.enable` / `auth.2fa.disable` / `auth.2fa_failed` | Two-factor set up, removed, or a wrong code or passkey entered |
+| `auth.passkey.add` / `auth.passkey.remove` | A passkey is registered or removed |
+| `auth.session.revoke` / `auth.session.revoke_others` | A device is signed out from the sessions page |
 | `user.create` | An admin creates a user |
 | `user.roles.update` | A user's roles change (before and after are stored) |
 | `user.active.update` | A user is enabled or disabled |
+| `user.2fa.reset` | An admin removes a user's two-factor authentication |
 | `role.create` / `role.update` / `role.delete` | Role changes (with permission snapshots) |
+| `permission.create` / `permission.update` / `permission.delete` | Permission catalogue changes |
 
 To audit a new action, call `audit.record(db, request, "thing.action", actor=user, target_type=..., target_id=..., detail={...})` before committing.
 
@@ -194,9 +270,12 @@ Interactive docs are at `/api/docs`.
 
 | Area | Endpoints |
 |---|---|
-| Auth | `POST /api/auth/register`, `verify-email`, `resend-verification`, `login`, `refresh`, `logout`, `forgot-password`, `reset-password`, `change-password`; `GET /api/auth/me` |
-| Users | `GET /api/users`, `POST /api/users`, `PUT /api/users/{id}/roles`, `PATCH /api/users/{id}/active` |
+| Auth | `POST /api/auth/register`, `verify-email`, `resend-verification`, `login`, `refresh`, `logout`, `forgot-password`, `reset-password`, `change-password`, `login/2fa`, `2fa/setup`, `2fa/enable`, `2fa/disable`; `GET /api/auth/me` |
+| Sessions | `GET /api/auth/sessions`, `POST /api/auth/sessions/{id}/revoke`, `POST /api/auth/sessions/revoke-others` |
+| Passkeys | `GET /api/auth/passkeys`, `POST /api/auth/passkeys/register/options`, `register`, `{id}/remove`; sign-in: `POST /api/auth/login/webauthn/options`, `login/webauthn` |
+| Users | `GET /api/users`, `POST /api/users`, `PUT /api/users/{id}/roles`, `PATCH /api/users/{id}/active`, `DELETE /api/users/{id}/2fa` |
 | Roles | `GET /api/roles`, `GET /api/roles/permissions`, `POST /api/roles`, `PUT /api/roles/{id}`, `DELETE /api/roles/{id}` |
+| Permissions | `GET /api/permissions`, `POST /api/permissions`, `PUT /api/permissions/{id}`, `DELETE /api/permissions/{id}` |
 | Audit | `GET /api/audit-logs` (query: `page`, `page_size`, `action` prefix, `actor` email substring) |
 | System | `GET /api/health` |
 
@@ -209,6 +288,7 @@ RoleGate/
 │   └── publish.yml              # release: push images to GHCR
 ├── docker-compose.yml
 ├── docker-compose.prod.yml      # run published images instead of building
+├── scripts/backup.sh            # periodic pg_dump used by the db-backup service
 ├── .env.example
 ├── nginx/default.conf
 ├── monitoring/
@@ -217,7 +297,7 @@ RoleGate/
 │   ├── alloy/config.alloy
 │   └── grafana/provisioning/
 │       ├── datasources/datasource.yml
-│       └── alerting/            # rules.yml, contact-points.yml, policies.yml
+│       └── alerting/            # rules.yml, reliability-rules.yml, contact-points.yml, policies.yml
 ├── backend/
 │   ├── Dockerfile
 │   ├── requirements.txt, requirements-dev.txt
@@ -225,7 +305,7 @@ RoleGate/
 │   ├── alembic/                 # migrations (env.py, versions/)
 │   ├── pytest.ini, ruff.toml
 │   ├── tests/                   # conftest.py, test_auth.py, test_rbac.py, test_audit.py,
-│   │                            # test_rate_limit.py
+│   │                            # test_rate_limit.py, test_2fa.py, test_passkeys.py, test_sessions.py, test_permissions.py
 │   └── app/
 │       ├── main.py              # app, lifespan, metrics
 │       ├── config.py            # settings from environment
@@ -236,9 +316,10 @@ RoleGate/
 │       ├── deps.py              # current user, require_permission
 │       ├── ratelimit.py         # Redis rate limiting + lockout
 │       ├── audit.py             # audit.record() helper
+│       ├── webauthn_utils.py    # passkey helpers (py-webauthn wrappers)
 │       ├── emailer.py
 │       ├── seed.py              # default roles, permissions, admin
-│       └── routers/             # auth.py, users.py, roles.py, audit_logs.py
+│       └── routers/             # auth.py, passkeys.py, sessions.py, users.py, roles.py, permissions.py, audit_logs.py
 └── frontend/
     ├── Dockerfile
     ├── nginx.conf
@@ -250,9 +331,9 @@ RoleGate/
         ├── stores/auth.js       # Pinia auth store (+ auth.test.js)
         ├── router/index.js      # route guards
         ├── layouts/AdminLayout.vue
-        ├── components/          # Sidebar, Header, Footer, UserCreateModal
+        ├── components/          # Sidebar, Header, Footer, UserCreateModal, TwoFactorCard, PasskeysCard, SessionsCard
         └── views/               # Login, Register, ForgotPassword, ResetPassword,
-                                 # VerifyEmail, Dashboard, Users, Roles, AuditLog, Profile
+                                 # VerifyEmail, Dashboard, Users, Roles, Permissions, AuditLog, Profile
 ```
 
 ## Development
@@ -365,6 +446,8 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 - Rate limiting reads the client IP from the `X-Real-IP` header set by Nginx, so keep Nginx as the only public entry point.
 - Grafana Alloy mounts the Docker socket (read-only) to discover containers. Read-only still grants broad access to the Docker API, so on shared production hosts prefer a Docker log driver or a socket proxy.
 - The audit log is append-only from the application's point of view; there is no API to edit or delete entries.
+- TOTP secrets are encrypted at rest with a key derived from `SECRET_KEY` (rotating `SECRET_KEY` invalidates them and forces users to re-enrol), codes cannot be replayed, and recovery codes are stored only as hashes.
+- Passkeys store only a public key. Challenges are single-use and short-lived, the origin and relying-party ID are verified on every assertion, and the signature counter detects cloned authenticators. Run the app behind HTTPS in production, and do not change `WEBAUTHN_RP_ID` once users have registered passkeys.
 
 ### Before going to production
 
@@ -374,13 +457,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 - [ ] Do not expose pgAdmin, Prometheus, Grafana or Mailpit publicly (or protect them)
 - [ ] Configure a real SMTP provider for the app (`SMTP_*`) and for Grafana alerts (`GF_SMTP_*`), then remove `mailpit`
 - [ ] Review the Alloy Docker socket mount and Loki retention (`retention_period`)
-- [ ] Set up database backups
+- [ ] Copy the `backups` volume off the host on a schedule and rehearse a restore
 
 ## Roadmap
 
-- [ ] Two-factor authentication
-- [ ] Automated database backups
-- [ ] Alert rules for server errors and latency
+- [ ] Off-host backup copies (S3-compatible storage)
 
 ## License
 

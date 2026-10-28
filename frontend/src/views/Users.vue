@@ -99,9 +99,8 @@ onMounted(load)
                 <button v-if="auth.can('roles:read')" class="btn btn-sm btn-outline-primary me-1" @click="edit(u)">
                   <i class="bi bi-pencil"></i> Roles
                 </button>
-                <button v-if="u.totp_enabled" class="btn btn-sm btn-outline-warning me-1" @click="reset2fa(u)">
-                  Reset 2FA
-                </button>
+                <span v-if="u.mfa_enabled" class="badge text-bg-info ms-1">2FA</span>
+                <button v-if="u.mfa_enabled" class="btn btn-sm btn-outline-warning me-1" @click="reset2fa(u)">Reset 2FA</button>
                 <button class="btn btn-sm btn-outline-secondary" @click="toggle(u)">
                   {{ u.is_active ? 'Disable' : 'Enable' }}
                 </button>

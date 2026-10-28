@@ -17,8 +17,16 @@ describe('two-step login', () => {
     http.post.mockResolvedValue({ data: { mfa_required: true, mfa_token: 'temp' } })
     const auth = useAuth()
     const result = await auth.login('a@example.com', 'secret')
-    expect(result).toEqual({ mfaRequired: true, mfaToken: 'temp' })
+    expect(result).toEqual({ mfaRequired: true, mfaToken: 'temp', methods: ['totp'] })
     expect(auth.isLoggedIn).toBe(false)
+  })
+
+  it('passes along which second steps the account has', async () => {
+    http.post.mockResolvedValue({
+      data: { mfa_required: true, mfa_token: 'temp', mfa_methods: ['passkey', 'totp'] },
+    })
+    const result = await useAuth().login('a@example.com', 'secret')
+    expect(result.methods).toEqual(['passkey', 'totp'])
   })
 
   it('signs in after a valid code', async () => {

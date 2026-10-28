@@ -105,13 +105,17 @@ def reset_two_factor(
         raise HTTPException(404, "User not found")
     if not user.totp_enabled:
         raise HTTPException(400, "Two-factor authentication is not enabled for this user")
+    if not user.mfa_enabled:
+        raise HTTPException(400, "Two-factor authentication is not enabled for this user")
+    removed = len(user.passkeys)
+    user.passkeys.clear()
     user.totp_enabled = False
     user.totp_secret = None
     user.totp_last_step = None
     db.execute(delete(models.RecoveryCode).where(models.RecoveryCode.user_id == user.id))
     audit.record(
         db, request, "user.2fa.reset", actor=actor, target_type="user", target_id=user.id,
-        detail={"email": user.email},
+        detail={"email": user.email, "passkeys_removed": removed},
     )
     db.commit()
     db.refresh(user)

@@ -42,6 +42,8 @@ class UserOut(BaseModel):
     email: EmailStr
     is_active: bool
     totp_enabled: bool
+    mfa_enabled: bool
+    passkey_count: int
     email_verified: bool
     created_at: datetime
     roles: list[RoleOut] = []
@@ -106,6 +108,7 @@ class LoginOut(BaseModel):
     token_type: str = "bearer"
     mfa_required: bool = False
     mfa_token: str | None = None
+    mfa_methods: list[str] = []
 
 
 class TwoFactorSetupOut(BaseModel):
@@ -139,3 +142,36 @@ class PermissionIn(BaseModel):
 class PermissionAdminOut(PermissionOut):
     builtin: bool
     roles: list[str] = []
+
+class PasswordIn(BaseModel):
+    password: str = Field(min_length=1, max_length=72)
+
+
+class MfaTokenIn(BaseModel):
+    mfa_token: str
+
+
+class PasskeyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    created_at: datetime
+    last_used_at: datetime | None
+
+
+class PasskeyRegisterIn(BaseModel):
+    name: str = Field(default="Passkey", max_length=60)
+    credential: dict
+
+
+class PasskeyLoginIn(BaseModel):
+    mfa_token: str
+    credential: dict
+
+class SessionOut(BaseModel):
+    id: str
+    user_agent: str | None
+    ip: str | None
+    started_at: datetime
+    last_active_at: datetime
+    current: bool

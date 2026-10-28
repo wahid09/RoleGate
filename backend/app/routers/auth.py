@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (
@@ -18,7 +19,7 @@ from ..config import settings
 from ..database import get_db
 from ..deps import get_current_user
 from ..emailer import send_email
-from ..ratelimit import login_failed, login_locked, login_ok, rate_limit
+from ..ratelimit import client_ip, login_failed, login_locked, login_ok, rate_limit
 from ..security import (
     create_access_token,
     create_mfa_token,
@@ -46,13 +47,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _issue_refresh(db: Session, user: models.User, response: Response) -> None:
+def _issue_refresh(
+    db: Session,
+    user: models.User,
+    response: Response,
+    request: Request | None = None,
+    previous: models.RefreshToken | None = None,
+) -> None:
+    """Issue a refresh token. `previous` is the token being rotated: the session identity carries over."""
     raw = generate_token()
     db.add(
         models.RefreshToken(
             user_id=user.id,
             token_hash=hash_token(raw),
             expires_at=_now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS),
+            session_id=previous.session_id if previous else str(uuid.uuid4()),
+            session_started_at=previous.session_started_at if previous else _now(),
+            user_agent=(request.headers.get("user-agent") or "")[:255] or None if request else None,
+            ip=client_ip(request) if request else None,
         )
     )
     db.commit()
@@ -209,13 +221,20 @@ def login(
     if not user.email_verified:
         raise HTTPException(403, NOT_VERIFIED)
 
-    if user.totp_enabled:
+    # if user.totp_enabled:
+    #     # password alone is not enough: no session yet, and the failure counter is NOT reset
+    #     return {"mfa_required": True, "mfa_token": create_mfa_token(str(user.id))}
+    if user.mfa_enabled:
         # password alone is not enough: no session yet, and the failure counter is NOT reset
-        return {"mfa_required": True, "mfa_token": create_mfa_token(str(user.id))}
+        return {
+            "mfa_required": True,
+            "mfa_token": create_mfa_token(str(user.id)),
+            "mfa_methods": user.mfa_methods,
+        }
 
     login_ok(email)
     audit.record(db, request, "auth.login", actor=user)
-    _issue_refresh(db, user, response)         # commits the audit row too
+    _issue_refresh(db, user, response, request)         # commits the audit row too
     return _access(user)
 
 
@@ -232,8 +251,10 @@ def login_2fa(
 ):
     user_id = decode_mfa_token(data.mfa_token)
     user = db.get(models.User, user_id) if user_id else None
-    if not user or not user.is_active or not user.totp_enabled:
+    if not user or not user.is_active:
         raise HTTPException(400, "Sign-in session expired. Please start again.")
+    if not user.totp_enabled:
+        raise HTTPException(400, "Authenticator app is not set up for this account. Use your passkey.")
     if login_locked(user.email):
         raise HTTPException(429, "Too many failed attempts. Try again in a few minutes.")
 
@@ -245,7 +266,7 @@ def login_2fa(
 
     login_ok(user.email)
     audit.record(db, request, "auth.login", actor=user, detail={"mfa": True})
-    _issue_refresh(db, user, response)         # also commits the consumed code
+    _issue_refresh(db, user, response, request)         # also commits the consumed code
     return _access(user)
 
 
@@ -315,6 +336,7 @@ def two_factor_disable(
 
 @router.post("/refresh", response_model=schemas.Token)
 def refresh(
+    request: Request,
     response: Response,
     refresh_token: str | None = Cookie(default=None),
     db: Session = Depends(get_db),
@@ -326,9 +348,11 @@ def refresh(
     )
     if not row:
         raise HTTPException(401, "Invalid refresh token")
-    if row.revoked:                       # reuse of a rotated token: assume theft
-        _revoke_all(db, row.user_id)
-        raise HTTPException(401, "Refresh token reuse detected")
+    if row.revoked:
+        if row.rotated:                   # reuse of a rotated token: assume theft
+            _revoke_all(db, row.user_id)
+            raise HTTPException(401, "Refresh token reuse detected")
+        raise HTTPException(401, "Session ended")   # signed out, or revoked from the sessions page
     if row.expires_at < _now():
         raise HTTPException(401, "Refresh token expired")
     user = db.get(models.User, row.user_id)
@@ -336,8 +360,9 @@ def refresh(
         raise HTTPException(401, "User unavailable")
 
     row.revoked = True                    # rotate
+    row.rotated = True
     db.commit()
-    _issue_refresh(db, user, response)
+    _issue_refresh(db, user, response, request, previous=row)
     return _access(user)
 
 

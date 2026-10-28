@@ -28,4 +28,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
 
 
+    WEBAUTHN_RP_ID: str = "localhost"          # the site's domain, no scheme/port. Changing it invalidates all passkeys.
+    WEBAUTHN_RP_NAME: str = "RoleGate"
+    WEBAUTHN_ORIGINS: str = "http://localhost,http://localhost:5173"   # comma-separated, exact browser origins
+
+    @property
+    def webauthn_origins(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.WEBAUTHN_ORIGINS.split(",") if o.strip()]
+
+
 settings = Settings()

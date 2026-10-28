@@ -1,14 +1,19 @@
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     DateTime,
     ForeignKey,
+    Integer,
+    LargeBinary,
     String,
     Table,
     false,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -63,6 +68,26 @@ class User(Base):
     totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)  # encrypted
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     totp_last_step: Mapped[int | None] = mapped_column(nullable=True)  # replay protection
+    passkeys: Mapped[list["WebAuthnCredential"]] = relationship(
+        lazy="selectin", cascade="all, delete-orphan", order_by="WebAuthnCredential.id"
+    )
+
+    @property
+    def passkey_count(self) -> int:
+        return len(self.passkeys)
+
+    @property
+    def mfa_enabled(self) -> bool:
+        return bool(self.totp_enabled or self.passkeys)
+
+    @property
+    def mfa_methods(self) -> list[str]:
+        methods = []
+        if self.passkeys:
+            methods.append("passkey")
+        if self.totp_enabled:
+            methods.append("totp")
+        return methods
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
@@ -72,6 +97,13 @@ class RefreshToken(Base):
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    session_id: Mapped[str] = mapped_column(
+        String(36), index=True, default=lambda: str(uuid.uuid4()), server_default=text("gen_random_uuid()::text")
+    )  # stays the same when the token rotates
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    session_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    rotated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # replaced by a newer token
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -119,3 +151,28 @@ class RecoveryCode(Base):
     code_hash: Mapped[str] = mapped_column(String(64), index=True)
     used: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class WebAuthnCredential(Base):
+    __tablename__ = "webauthn_credentials"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    credential_id: Mapped[str] = mapped_column(String(512), unique=True, index=True)  # base64url
+    public_key: Mapped[bytes] = mapped_column(LargeBinary)                            # COSE key
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    transports: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WebAuthnChallenge(Base):
+    """A one-time challenge handed to the browser; deleted when used or expired."""
+
+    __tablename__ = "webauthn_challenges"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(10))  # "register" or "login"
+    challenge: Mapped[bytes] = mapped_column(LargeBinary)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

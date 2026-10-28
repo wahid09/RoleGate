@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import http from '../api/http'
+import { getCredential } from '../api/webauthn'
 
 export const useAuth = defineStore('auth', {
   state: () => ({ token: localStorage.getItem('token'), user: null }),
@@ -11,12 +12,20 @@ export const useAuth = defineStore('auth', {
     async login(email, password) {
       const body = new URLSearchParams({ username: email, password })
       const { data } = await http.post('/auth/login', body)
-      if (data.mfa_required) return { mfaRequired: true, mfaToken: data.mfa_token }
+      if (data.mfa_required) {
+        return { mfaRequired: true, mfaToken: data.mfa_token, methods: data.mfa_methods || ['totp'] }
+      }
       await this.finishLogin(data.access_token)
       return { mfaRequired: false }
     },
     async loginWithCode(mfaToken, code) {
       const { data } = await http.post('/auth/login/2fa', { mfa_token: mfaToken, code })
+      await this.finishLogin(data.access_token)
+    },
+    async loginWithPasskey(mfaToken) {
+      const { data: options } = await http.post('/auth/login/webauthn/options', { mfa_token: mfaToken })
+      const credential = await getCredential(options)
+      const { data } = await http.post('/auth/login/webauthn', { mfa_token: mfaToken, credential })
       await this.finishLogin(data.access_token)
     },
     async finishLogin(accessToken) {
