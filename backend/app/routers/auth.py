@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import (
     APIRouter,
@@ -44,7 +44,7 @@ NOT_VERIFIED = "Email not verified"   # the frontend matches on this text
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _issue_refresh(
