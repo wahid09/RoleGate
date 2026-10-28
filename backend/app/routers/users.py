@@ -101,10 +101,6 @@ def reset_two_factor(
     actor: models.User = Depends(require_permission("users:update")),
 ):
     user = db.get(models.User, user_id)
-    if not user:
-        raise HTTPException(404, "User not found")
-    if not user.totp_enabled:
-        raise HTTPException(400, "Two-factor authentication is not enabled for this user")
     if not user.mfa_enabled:
         raise HTTPException(400, "Two-factor authentication is not enabled for this user")
     removed = len(user.passkeys)
