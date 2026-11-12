@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -6,9 +8,6 @@ from .. import audit, models, schemas
 from ..database import get_db
 from ..deps import require_permission
 from ..security import hash_password
-from datetime import UTC, datetime
-
-from fastapi import Request
 
 router = APIRouter(prefix="/users", tags=["users"])
 
