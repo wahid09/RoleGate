@@ -14,16 +14,16 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     unauthorized = HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        if payload.get("purpose"):   # e.g. the temporary 2FA token is not an access token
-            raise unauthorized
         user = db.get(User, int(payload["sub"]))
     except (jwt.PyJWTError, KeyError, ValueError):
         raise unauthorized
+    if payload.get("purpose"):          # the temporary 2FA token is not a bearer token
+        raise unauthorized
     if not user or not user.is_active:
-        #raise unauthorized
-        cutoff = user.tokens_valid_after
-        if cutoff is not None and payload.get("iat", 0) <= int(cutoff.timestamp()):
-            raise unauthorized  # signed out by an admin; tokens without "iat" (older ones) are rejected too
+        raise unauthorized
+    cutoff = user.tokens_valid_after
+    if cutoff is not None and payload.get("iat", 0) <= int(cutoff.timestamp()):
+        raise unauthorized              # an admin signed this user out everywhere
     return user
 
 
