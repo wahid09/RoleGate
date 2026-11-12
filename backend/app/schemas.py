@@ -175,3 +175,9 @@ class SessionOut(BaseModel):
     started_at: datetime
     last_active_at: datetime
     current: bool
+
+class UserPage(BaseModel):
+    items: list[UserOut]
+    total: int
+    page: int
+    page_size: int

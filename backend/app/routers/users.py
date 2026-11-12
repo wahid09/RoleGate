@@ -1,7 +1,8 @@
 from datetime import UTC, datetime
+from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import delete, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .. import audit, models, schemas
@@ -207,3 +208,45 @@ def revoke_user_session(
     )
     db.commit()
     return {"message": "Session signed out"}
+
+SORTS = {"id": models.User.id, "name": models.User.full_name, "email": models.User.email}
+
+
+@router.get("/search", response_model=schemas.UserPage)
+def search_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    search: str | None = Query(None, max_length=100, description="Substring of name or email"),
+    role_id: int | None = Query(None),
+    status: Literal["active", "disabled"] | None = Query(None),
+    mfa: Literal["on", "off"] | None = Query(None, description="Has an authenticator app or a passkey"),
+    sort: Literal["id", "name", "email"] = "id",
+    order: Literal["asc", "desc"] = "asc",
+    db: Session = Depends(get_db),
+    _=Depends(require_permission("users:read")),
+):
+    q = select(models.User)
+
+    term = (search or "").strip()
+    if term:
+        # escape LIKE wildcards so "50%" or "a_b" are searched literally
+        like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        q = q.where(
+            or_(models.User.full_name.ilike(like, escape="\\"), models.User.email.ilike(like, escape="\\"))
+        )
+    if role_id is not None:
+        q = q.where(models.User.roles.any(models.Role.id == role_id))
+    if status:
+        q = q.where(models.User.is_active.is_(status == "active"))
+    if mfa:
+        has_mfa = or_(
+            models.User.totp_enabled.is_(True),
+            exists().where(models.WebAuthnCredential.user_id == models.User.id),
+        )
+        q = q.where(has_mfa if mfa == "on" else ~has_mfa)
+
+    total = db.scalar(select(func.count()).select_from(q.subquery())) or 0
+    column = SORTS[sort]
+    ordering = (column.asc() if order == "asc" else column.desc(), models.User.id)  # id = stable tie-break
+    items = db.scalars(q.order_by(*ordering).offset((page - 1) * page_size).limit(page_size)).all()
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
