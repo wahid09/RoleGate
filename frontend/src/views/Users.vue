@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import http, { errorMessage } from '../api/http'
 import { useAuth } from '../stores/auth'
 import UserCreateModal from '../components/UserCreateModal.vue'
+import UserSessionsModal from '../components/UserSessionsModal.vue'
 
 const auth = useAuth()
 const users = ref([])
@@ -11,6 +12,7 @@ const editing = ref(null)
 const selected = ref([])
 const showCreate = ref(false)
 const error = ref('')
+const sessionsFor = ref(null)   // the user whose sessions are open
 
 async function load() {
   users.value = (await http.get('/users')).data
@@ -104,6 +106,7 @@ onMounted(load)
                 <button class="btn btn-sm btn-outline-secondary" @click="toggle(u)">
                   {{ u.is_active ? 'Disable' : 'Enable' }}
                 </button>
+                <button class="btn btn-sm btn-outline-secondary me-1" @click="sessionsFor = u">Sessions</button>
               </td>
             </tr>
           </tbody>
@@ -112,6 +115,7 @@ onMounted(load)
     </div>
 
     <UserCreateModal v-if="showCreate" :roles="roles" @close="showCreate = false" @created="onCreated" />
+    <UserSessionsModal v-if="sessionsFor" :user="sessionsFor" @close="sessionsFor = null" />
 
     <div v-if="editing" class="modal d-block" style="background: rgba(0, 0, 0, 0.5)">
       <div class="modal-dialog modal-dialog-centered">

@@ -16,7 +16,7 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 - Forgot / reset password by email
 - Change password from the profile page (other devices are signed out)
 - Two-factor authentication: TOTP authenticator apps (with single-use recovery codes) and/or WebAuthn passkeys, plus an admin reset
-- Session management: see every signed-in device (browser, OS, IP, last active) and sign out one or all others
+- Session management: see every signed-in device (browser, OS, IP, last active) and sign out one or all others; admins can sign a user out everywhere, immediately
 - Redis rate limiting on sensitive endpoints, plus per-account lockout after repeated failed logins
 
 **Authorization (RBAC)**
@@ -39,8 +39,8 @@ RoleGate is a full-stack starter for apps that need secure sign-up, sign-in and 
 - PostgreSQL with pgAdmin, Alembic migrations
 - Metrics: Prometheus, Grafana, postgres-exporter, cAdvisor
 - Centralized logs: Loki + Grafana Alloy, searchable in Grafana
-- Alerting: Grafana alert rules for failed logins, login throttling, server errors, slow responses, a downed backend and missing backups, delivered by email
-- Automated PostgreSQL backups to a Docker volume, with retention and a documented restore procedure
+- Alerting: Grafana alert rules for failed logins, login throttling, server errors, slow responses, a downed backend, missing backups and failed off-host backup copies, delivered by email
+- Automated PostgreSQL backups to a Docker volume, with retention and a documented restore procedure, plus optional off-host copies to any S3-compatible storage
 - Releases: tagged versions publish Docker images to GitHub Container Registry
 - Mailpit to catch emails in development
 
@@ -132,6 +132,7 @@ Grafana alert rules, a contact point and a notification policy are provisioned f
 | Slow responses | 95th percentile response time above 1 second for 5 minutes | warning |
 | Backend is down | Prometheus cannot scrape the API for 2 minutes | critical |
 | Database backup missing | no successful backup logged in the last 26 hours | critical |
+| Off-host backup failed | an upload to S3 failed in the last 25 hours | critical |
 
 Alerts are emailed to `ALERT_EMAIL` through Grafana's SMTP settings (Mailpit in development, so they appear at http://localhost:8025). The login rules read the backend's access logs from Loki, the reliability rules use Prometheus metrics, and the backup rule watches the backup container's logs. Change thresholds in `rules.yml` and `reliability-rules.yml` under `monitoring/grafana/provisioning/alerting/` and restart Grafana; provisioned rules are read-only in the Grafana UI.
 
@@ -160,7 +161,28 @@ docker compose exec db-backup sh -c 'pg_restore --clean --if-exists --no-owner -
 docker compose start backend
 ```
 
-The volume lives on the same host as the database, so also copy dumps somewhere else (another machine or object storage) on a schedule.
+### Off-host copies (S3-compatible storage)
+
+The `backups` volume lives on the same host as the database, so a dead disk or a lost server takes the backups with it. Set `S3_BUCKET` and every dump is also uploaded to object storage right after it is written. It works with AWS S3, Backblaze B2, Cloudflare R2, Wasabi, MinIO and anything else that speaks the S3 API.
+
+| Variable | Description |
+|---|---|
+| `S3_BUCKET` | Bucket name. **Empty disables off-host copies** (the default) |
+| `S3_PREFIX` | Folder inside the bucket (default `rolegate`) |
+| `S3_ENDPOINT_URL` | Leave empty for AWS. For other providers use their endpoint, e.g. `https://s3.eu-central-003.backblazeb2.com` |
+| `S3_ADDRESSING_STYLE` | `auto` (default) or `path` (needed by MinIO and some self-hosted stores) |
+| `S3_KEEP_DAYS` | Delete uploaded dumps older than this many days (default 30, `0` keeps everything) |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` | Credentials and region (region can stay `us-east-1` for most non-AWS providers) |
+
+Uploads are retried three times. A successful copy logs `offsite ok`, a failure logs `offsite FAILED` and triggers the "Off-host backup failed" alert; the local dump is kept either way. Rebuild the service once after enabling it (`docker compose build db-backup`), because it now includes the AWS CLI.
+
+```bash
+docker compose exec db-backup /bin/sh /backup.sh once            # take one backup and upload it now
+docker compose exec db-backup aws s3 ls s3://<bucket>/rolegate/   # list off-host copies (add --endpoint-url for non-AWS)
+docker compose exec db-backup aws s3 cp s3://<bucket>/rolegate/<file>.dump /backups/   # fetch one to restore from
+```
+
+Use a private bucket and a key that can only read, write and delete inside the prefix. The dumps contain every user's password hash and encrypted two-factor secrets, so treat them like the database itself, and turn on server-side encryption in the bucket. Dumps are not encrypted by RoleGate before upload.
 
 ## Configuration
 
@@ -232,6 +254,10 @@ Passkeys are a second factor, alongside TOTP. From **Profile → Passkeys** a us
 
 A session is one chain of rotating refresh tokens: the session ID stays the same each time the token rotates. Signing a device out revokes its refresh token, so it cannot get a new access token. An access token that was already issued stays valid until it expires (15 minutes by default). "Last active" updates whenever the device refreshes its token, so it is accurate to roughly that interval. Revoking a device is deliberately not treated as token theft: only reuse of an already-rotated token signs out every device.
 
+### Signing a user out (admins)
+
+A user with `users:update` can open **Users → Sessions** to see a user's signed-in devices, sign out one device, or **Sign out everywhere**. Signing out everywhere takes effect immediately: besides revoking refresh tokens it stamps the account with a `tokens_valid_after` time, and any access token issued at or before that moment is rejected on its next request (access tokens carry an `iat` claim for this). Signing out a single device only stops it renewing, so it can keep working until its current access token expires (15 minutes by default). Admins cannot use this on their own account; use Profile for that. If a user's tokens predate this feature (no `iat`), they are rejected after a sign-out-everywhere, which is the safe direction. Disabling an account already blocks it immediately.
+
 ## Dev Console and permission management
 
 The sidebar groups the administration pages under **Dev Console**: Users, Roles, Permissions and Audit Log. Each entry only appears for users who hold its `*:read` permission, and the group hides itself when none apply. Old URLs such as `/users` redirect to `/dev/users`.
@@ -255,6 +281,7 @@ Each entry stores the actor (id and email snapshot), action, target, JSON detail
 | `auth.2fa.enable` / `auth.2fa.disable` / `auth.2fa_failed` | Two-factor set up, removed, or a wrong code or passkey entered |
 | `auth.passkey.add` / `auth.passkey.remove` | A passkey is registered or removed |
 | `auth.session.revoke` / `auth.session.revoke_others` | A device is signed out from the sessions page |
+| `user.sessions.revoke_all` / `user.session.revoke` | An admin signs a user out everywhere / signs out one of their devices |
 | `user.create` | An admin creates a user |
 | `user.roles.update` | A user's roles change (before and after are stored) |
 | `user.active.update` | A user is enabled or disabled |
@@ -271,7 +298,7 @@ Interactive docs are at `/api/docs`.
 | Area | Endpoints |
 |---|---|
 | Auth | `POST /api/auth/register`, `verify-email`, `resend-verification`, `login`, `refresh`, `logout`, `forgot-password`, `reset-password`, `change-password`, `login/2fa`, `2fa/setup`, `2fa/enable`, `2fa/disable`; `GET /api/auth/me` |
-| Sessions | `GET /api/auth/sessions`, `POST /api/auth/sessions/{id}/revoke`, `POST /api/auth/sessions/revoke-others` |
+| Sessions | `GET /api/auth/sessions`, `POST /api/auth/sessions/{id}/revoke`, `POST /api/auth/sessions/revoke-others`; admin: `GET /api/users/{id}/sessions`, `POST /api/users/{id}/sessions/revoke-all`, `POST /api/users/{id}/sessions/{session_id}/revoke` |
 | Passkeys | `GET /api/auth/passkeys`, `POST /api/auth/passkeys/register/options`, `register`, `{id}/remove`; sign-in: `POST /api/auth/login/webauthn/options`, `login/webauthn` |
 | Users | `GET /api/users`, `POST /api/users`, `PUT /api/users/{id}/roles`, `PATCH /api/users/{id}/active`, `DELETE /api/users/{id}/2fa` |
 | Roles | `GET /api/roles`, `GET /api/roles/permissions`, `POST /api/roles`, `PUT /api/roles/{id}`, `DELETE /api/roles/{id}` |
@@ -288,7 +315,9 @@ RoleGate/
 │   └── publish.yml              # release: push images to GHCR
 ├── docker-compose.yml
 ├── docker-compose.prod.yml      # run published images instead of building
-├── scripts/backup.sh            # periodic pg_dump used by the db-backup service
+├── scripts/
+│   ├── backup.sh                # periodic pg_dump (+ optional S3 upload) used by the db-backup service
+│   └── backup.Dockerfile        # postgres:16-alpine + AWS CLI
 ├── .env.example
 ├── nginx/default.conf
 ├── monitoring/
@@ -305,7 +334,7 @@ RoleGate/
 │   ├── alembic/                 # migrations (env.py, versions/)
 │   ├── pytest.ini, ruff.toml
 │   ├── tests/                   # conftest.py, test_auth.py, test_rbac.py, test_audit.py,
-│   │                            # test_rate_limit.py, test_2fa.py, test_passkeys.py, test_sessions.py, test_permissions.py
+│   │                            # test_rate_limit.py, test_2fa.py, test_passkeys.py, test_sessions.py, test_admin_sessions.py, test_permissions.py
 │   └── app/
 │       ├── main.py              # app, lifespan, metrics
 │       ├── config.py            # settings from environment
@@ -331,7 +360,7 @@ RoleGate/
         ├── stores/auth.js       # Pinia auth store (+ auth.test.js)
         ├── router/index.js      # route guards
         ├── layouts/AdminLayout.vue
-        ├── components/          # Sidebar, Header, Footer, UserCreateModal, TwoFactorCard, PasskeysCard, SessionsCard
+        ├── components/          # Sidebar, Header, Footer, UserCreateModal, TwoFactorCard, PasskeysCard, SessionsCard, UserSessionsModal
         └── views/               # Login, Register, ForgotPassword, ResetPassword,
                                  # VerifyEmail, Dashboard, Users, Roles, Permissions, AuditLog, Profile
 ```
@@ -457,11 +486,11 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 - [ ] Do not expose pgAdmin, Prometheus, Grafana or Mailpit publicly (or protect them)
 - [ ] Configure a real SMTP provider for the app (`SMTP_*`) and for Grafana alerts (`GF_SMTP_*`), then remove `mailpit`
 - [ ] Review the Alloy Docker socket mount and Loki retention (`retention_period`)
-- [ ] Copy the `backups` volume off the host on a schedule and rehearse a restore
+- [ ] Set `S3_BUCKET` (private bucket, least-privilege key) so backups leave the host, and rehearse a restore from an off-host copy
 
 ## Roadmap
 
-- [ ] Off-host backup copies (S3-compatible storage)
+All planned items are done. Ideas and bug reports are welcome as GitHub issues.
 
 ## License
 

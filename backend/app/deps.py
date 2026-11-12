@@ -20,7 +20,10 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except (jwt.PyJWTError, KeyError, ValueError):
         raise unauthorized
     if not user or not user.is_active:
-        raise unauthorized
+        #raise unauthorized
+        cutoff = user.tokens_valid_after
+        if cutoff is not None and payload.get("iat", 0) <= int(cutoff.timestamp()):
+            raise unauthorized  # signed out by an admin; tokens without "iat" (older ones) are rejected too
     return user
 
 

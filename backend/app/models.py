@@ -68,6 +68,7 @@ class User(Base):
     totp_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)  # encrypted
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     totp_last_step: Mapped[int | None] = mapped_column(nullable=True)  # replay protection
+    tokens_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     passkeys: Mapped[list["WebAuthnCredential"]] = relationship(
         lazy="selectin", cascade="all, delete-orphan", order_by="WebAuthnCredential.id"
     )
