@@ -198,7 +198,7 @@ onMounted(async () => {
         <h4 class="mb-1">Users</h4>
         <p class="text-body-secondary mb-0" aria-live="polite">{{ subtitle }}</p>
       </div>
-      <button v-if="auth.can('users:create')" class="btn btn-primary" @click="showCreate = true">
+      <button v-if="auth.can('users:create')" class="btn btn-outline-primary" @click="showCreate = true">
         <i class="bi bi-person-plus me-1"></i> New user
       </button>
     </header>
